@@ -36,10 +36,9 @@ class Sigma {
 
 class Pair extends Sigma {
   constructor (type1, type2) {
-    let klass = super(type1, () => type2)
+    super(type1, () => type2)
     this.fstType = type1
     this.sndType = type2
-    return klass
   }
 }
 
