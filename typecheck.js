@@ -84,15 +84,15 @@ function makeType (typename, { params = [], indexes = [] }, ctors) {
   } })[typename]
 }
 
-let Vector = makeType('Vector', {params: ['Function'], indexes: ['Number']}, [
-  {ctorname: 'nil', typecon: a => [['Vector', a, 0]], toString: () => '<>'},  // Pi(Function, App(App(Vector, Bound(0)), new Nat().zero()))
-  {ctorname: 'cons', typecon: (a, n) => [a, ['Vector', a, n], ['Vector', a, n + 1]], // Pi(Function, Pi(Nat, Lam(Lam(...etc...))))
+let _Vector = makeType('_Vector', {params: ['Function'], indexes: ['Number']}, [
+  {ctorname: 'nil', typecon: a => [['_Vector', a, 0]], toString: () => '<>'},  // Pi(Function, App(App(Vector, Bound(0)), new Nat().zero()))
+  {ctorname: 'cons', typecon: (a, n) => [a, ['_Vector', a, n], ['_Vector', a, n + 1]], // Pi(Function, Pi(Nat, Lam(Lam(...etc...))))
     toString () { return `${this[0].toString()} :: ${this[1].toString()}`}}
 ]);
 
-let List = makeType('List', {params: ['Function']}, [
-  {ctorname: 'nil', typecon: a => [[List, a]], toString: () => '[]'},
-  {ctorname: 'cons', typecon: a => [a, [List, a], [List, a]],
+let _List = makeType('_List', {params: ['Function']}, [
+  {ctorname: 'nil', typecon: a => [[_List, a]], toString: () => '[]'},
+  {ctorname: 'cons', typecon: a => [a, [_List, a], [_List, a]],
     toString () { return `${this[0].toString()} : ${this[1].toString()}` }}
 ]);
 
@@ -110,37 +110,43 @@ var R = (() => {
 
   // Parser
 
-  class Type {
-    constructor (typesig, ctors) {
-      let klass, { typeName, params = [], indices = [] } = typesig;
+  class Data {
+    constructor (typeDef, ctors = []) {
+      let klass, { typeName, typeSig = [] } = typeDef;
+      if (!typeName || !typeof typeName === 'string') throw new Error('Bad type name');
+      // typecheck should go here
       return klass = ({ [typeName]: class {
-        sig = { params: params.slice(), indices: indices.slice() }
-        con = null
+        sig = new Tele(...typeSig)
+        ctor = typeName
         constructor (...typeParams) {
+          let init = (...params) => {
+            console.log(this.sig, params)
+            return true
+          }
+          this.state = 'unchecked';
           try { init(...typeParams) }
           catch (e) { throw new Error(`Cannot form type ${name}`) }
           let data = new Decl({data: [
             new Name({global: [typeName]}),
-            ctors.map(({ctorName, tele = [], ...builtins}) => {
-              let lcname = ctorName.charAt(0).toLowerCase() + ctorName.slice(1),
-                  con = parse(tele);
+            this.sig,
+            ctors.map(({ctorName, ctorSig = [], ...builtins}) => {
+              let lcname = ctorName.charAt(0).toLowerCase() + ctorName.slice(1);
               this[lcname] = (...args) => new ({ [ctorName]: class extends klass {
-                con = con
+                con = new Tele(...ctorSig)
                 ctor = ctorName
                 constructor () {
-                  super(...tele);
+                  super(...ctorSig);
                   try { init(...args) }
                   catch (e) { throw new Error(`Cannot form term ${ctorName} of ${typeName}`) }
-                  for (let m in builtins) this[m] = builtins[m];
-                  console.log(builtins)
-                  this.value = args.map(str => context.lookup(new Name({global: [str]}), 'def'))
+                  Object.assign(this, builtins);
+                  //this.value = args.map(str => context.lookup(new Name({global: [str]}), 'def')) //?
+                  this.value = args
                 }
               } })[ctorName]();
-              return new Ctor({ctor: [ctorName, tele]})
+              return new Ctor({ctor: [new Name({global: [ctorName]}), new Tele(...ctorSig)]})
             })
           ]});
-          this.state = 'unchecked';
-          typecheck(context, typeName, data).then(res => {
+          typecheck(data).then(res => {
             console.log(res)
             this.state = 'checked'
           }).catch(e => {
@@ -151,50 +157,89 @@ var R = (() => {
         toString () { return `[${typeName}]` }
       } })[typeName]
     }
-  }
-
-  function init (...params) {
-    return true
-  }
-
-  function parse (tele) {
-    return tele
-  }
+  };
+  class Sig {
+    constructor (string, hint) {
+      let pipe = (r => p => r = r.then(p))(Promise.resolve());
+      pipe(() => typecheck(new Decl({sig: [ new Name({global: [string]}), hint ]})))
+      Object.assign(this, {
+        name: new Name({global: [string]}),
+        Def: expr => {
+          pipe(() => typecheck(new Decl({def: [ new Name({global: [string]}), expr ]})))
+            .then(type => Object.assign(this, {
+              type, expr, state: 'checked',
+              apply: (...args) => typecheck(new Decl({def: [ new Name({global: ['self']}),
+                args.reduce((a, x) => new Term({app: [x, a]}), expr) ]}))
+            }));
+          this.state = 'unchecked';
+          return this
+        }
+      })
+    }
+  };
 
 
   // Abstract syntax tree
 
   class Context {
     indices = []
-    cons (k, v, ctor) {
+    mode = 'term'
+    globals = 0 // Is there any utility to keeping track of local/global context?
+    fresh = (i => () => i++)(0)
+    cons (decl, g) {
       let ret = new Context(this);
-      (ret.indices = this.indices.slice()).push(new Decl({ [ctor]: [k, v] }));
+      (ret.indices = this.indices.slice()).push(decl);
+      ret.mode = this.mode;
+      if (g) ret.globals++;
       return ret
     }
-    push (k, v, ctor) {
-      this.indices.push(new Decl({ [ctor]: [k, v] }));
+    push (decl) {
+      this.indices.push(decl);
+      this.globals++;
       return this
+    }
+    concatTele (tele) {
+      let ret = new Context(this);
+      for (let i of tele.items) switch (i.ctor) {
+        case 'term': ret = ret.cons(new Decl({sig: i.value}), false);
+        break;
+        case 'constraint': ret = ret.cons(new Decl({def: [i.value[0].value[0], i.value[1]]}), false)
+      }
+      return ret
     }
     '!!' (i) {
       return this.indices[this.indices.length - i - 1].value[1]
     }
-    lookup (val, ctor) {
-      let ret = this.indices.find(decl => decl.value[0].equal(val) && decl.ctor === ctor);
+    lookup (name, ctor) {
+      let ret = this.indices.find(decl => ctor === 'ctor' ?
+        (decl.ctor === 'data' && decl.value[2].find(dcon => dcon.value[0].equal(name))) :
+        (decl.ctor === ctor && decl.value[0].equal(name)));
       if (ret) return ret.value[1]
     }
+    lookupAll (name) {
+      return this.indices.flatMap(decl => decl.ctor === 'data' ? decl.value[2].slice().push(decl) : decl)
+         .filter(x => x.value[0].equal(name))
+    }
+    mode (m) {
+      if (m === 'term' || m === 'pat') this.mode = m;
+      else throw new Error(`Illegal context mode '${m}'`)
+    }
+    getIndices () { return indices }
   };
 
   function AST (...args) {
     return class {
       constructor (arg) {
         let kv = Object.entries(arg);
-        if (kv.length !== 1) throw new Error('Too many constructors');
-        if (!~args.indexOf(kv[0][0])) throw new Error('Not a valid constructor');
+        if (kv.length !== 1) throw new Error('Wrong number of constructors');
+        if (!~args.indexOf(kv[0][0])) throw new Error(`${kv[0][0]} not a valid constructor. Looking for: ${args.join(', ')}`);
         [this.ctor, this.value] = kv[0]
       }
     }
   }
-  class Term extends AST('ann', 'star', 'pi', 'lam', 'app', 'boundvar', 'freevar') {
+  class Term extends AST('ann', 'star', 'pi', 'lam', 'app', 'boundvar', 'freevar'
+    // ,'tcon', 'dcon'
+    ) {
     equal (operand) {
       return this.ctor === operand.ctor &&
         this.value.every((x, i) => x === operand.value[i] || x.equal(operand.value[i]))
@@ -207,7 +252,10 @@ var R = (() => {
         case 'lam': return `Lam(${this.value[0].toString()})`;
         case 'app': return `${this.value[0].toString()} :@: ${this.value[1].toString()}`;
         case 'boundvar': return `Bound ${this.value[0]}`;
-        case 'freevar': return `Free ${this.value[0]}`
+        case 'freevar': return `Free ${this.value[0]}`;
+        //
+        // case 'tcon':
+        // case 'dcon': return `${this.value[0].value[0]} :@: ${this.value.slice(1).map(x => x.toString()).join(' :@: ')}`;
       }
     }
   }
@@ -222,72 +270,175 @@ var R = (() => {
 
   class Decl extends AST('sig', 'def', 'recdef', 'data', 'datasig') {}
   class Ctor extends AST('ctor') {}
-  class Tele extends AST('empty', 'cons', 'constraint') {}
-  class Epsilon extends AST('runtime', 'erased') {}
-  class Arg extends AST('arg') {}
+
+  class Item extends AST('term', 'constraint') {} // Better name pls
+  class Tele { // TODO: meaningfully distinguish params/indices
+    items = []
+    constructor (...items) {
+      /*
+      'x:A'   => new TeleItem({term: [new Term({ann: ['x', 'A']})]}) etc
+      'A'     => new TeleItem({term: [new Term({freevar: ['A']})]})  ??
+      '{x:A}' => Erased
+      '{A}'   => Erased?
+      '{a=b}' => new TeleItem({constraint: [parse(a), parse(b)]})    ??
+      */
+      for (let item of items) this[item.ctor](item)
+    }
+    term (item) { this.items.push(item) }
+    constraint (item) { this.items.push(item) }
+  }
+
+  class Epsilon extends AST('runtime', 'erased') {} // replace Term/Value ?
+  class Arg extends AST('arg') {}                 　//
 
 
   // Type checker
 
-  function typecheck (ctx, string, term) {
-    let name = new Name({global: [string]}),
-        mbType = ctx.lookup(name, 'sig');
-    if (mbType) {
-      return check(ctx, term, mbType.value[0])
-        .then(type => {
-          let value = evaluate(ctx, term);
-          ctx.push(name, value, false);
-          //let ret = string + ' : ' + print(quote(mbType.value[0]))
-          return quote(mbType.value[0]).toString()
+  function typecheck (decl, ctx = context) {
+    let [name, term, ctors] = decl.value;
+    switch (decl.ctor) {
+      case 'sig':
+      //dup?
+      //whnf
+      return check(ctx, term, new Value({vstar: []}))
+        .then(() => ctx.push(new Decl({sig: [name, evaluate(term, ctx)]})))
+
+      case 'def':
+      if (typeof ctx.lookup(name, 'def') === 'undefined') {
+        let mbType = ctx.lookup(name, 'sig');
+        return typeof mbType === 'undefined' ?
+          infer(ctx, term).then(type =>
+            ctx.push(new Decl({sig: [name, type]}))
+              .push(new Decl({def: [name, evaluate(term, ctx)]}))
+          ) :
+          check(ctx, term, mbType).then(type => // recursive?
+            ctx.push(new Decl({def: [name, evaluate(term, ctx)]}))
+          )
+      } else throw new Error(name.value[0] + ' already defined');
+
+      case 'data':
+      return tcTele(ctx, term).then(tele =>
+        Promise.all(ctors.map(ctor =>
+          tcTele(ctx.cons(new Decl({datasig: [name, tele]})).concatTele(tele), ctor.value[1])
+            .then(ctele => new Ctor({ctor: [ctor.value[0], ctele]}))
+        )).then(ctors => {
+          let decl = new Decl({data: [name, tele, ctors]});
+          ctx.push(decl);
+          return decl
         })
-        .catch(e => {
-          throw new Error(e.message + `\nwhen checking term ${term.toString()}\nagainst type ${quote(mbType).toString()}`)
-        })
-    } else {
-      console.log(term)
-      return infer(ctx, term).then(type => {
-        let value = evaluate(ctx, term);
-        ctx.push(name, type, 'sig').push(name, value, 'def');
-        //let ret = string + ' : ' + print(quote(type.value[0]))
-        return quote(type.value[0]).toString()
-      })
+      )
+
+      case 'recdef':
+      case 'datasig': throw new Error('Internal construct')
+    }
+  }
+
+  function tcTele (ctx, tele) { // returns a Value...?
+    // TODO: convert to sync code
+    return Promise.all(tele.items.map(term => {
+      switch (tele.ctor) {
+        case 'constraint':
+        return infer(ctx, tele.value[0])
+          .then(type => check(ctx, tele.value[1], type))
+          .then(type => constraintToDecls(ctx, ...tele.value))
+          .then(decls => (decls.forEach(decl => ctx = ctx.cons(decl, false)), decls))
+          .then(decls => [term, ...decls])
+
+        case 'term':  // TODO: combine explicit and implicit bindings
+        return term.ctor === 'ann' ?
+          infer(ctx, term).then(type =>
+            ctx = ctx.cons(new Decl({sig: [term.value[0].value[0], type]}), false)) :
+          check(ctx, term, new Term({star: []})).then(type =>
+            // wildcard names are numbers
+            ctx = ctx.cons(new Decl({sig: [new Name({global: [ctx.fresh()]}), type]}), false))
+        // Erased
+      }
+    })).then(ar => new Tele(...ar.flat()))
+  }
+
+  function constraintToDecls (ctx, term1, term2) {
+    let lhnf = whnf(term1), rhnf = whnf(term2), decls = [];
+    console.log(lhnf, rhnf)
+    if (lhnf.equal(rhnf)) return decls;
+    else {
+      if (lhnf.ctor === 'app' && rhnf.ctor === 'app') {
+        decls = decls.concat(constraintToDecls(ctx, lhnf.value[0], rhnf.value[0]));
+        decls = decls.concat(constraintToDecls(ctx, lhnf.value[1], rhnf.value[1]));
+      }
+      else if (lhnf.ctor === 'freevar') return [ new Decl({def: [lhnf.value[0], rhnf]}) ];
+      else if (rhnf.ctor === 'freevar') return [ new Decl({def: [rhnf.value[0], lhnf]}) ];
+      else throw new Error(`Cannot equate lhs and rhs of constraint ${lhnf.toString()} = ${rhnf.toString()}`)
+    }
+  }
+
+  function whnf (ctx, term) {
+    switch (term.ctor) {
+      case 'freevar':
+      let mbDef = ctx.lookup(term.value[0], 'def');
+      return typeof mbDef === 'undefined' ? term : whnf(ctx, mbDef);
+
+      case 'app':
+      let nf = whnf(ctx, term.value[0]);
+      switch (nf.ctor) {
+        case 'lam':
+        let [func] = evaluate(nf.value[0], ctx).value;
+        return whnf(ctx, func(term.value[1]));
+
+        case 'freevar':
+        let nf2 = whnf(ctx, term.value[1]);
+        // let mbRecDef = ctx.lookup(nf.value[0], 'recdef');
+        // if (typeof mbRecDef === 'undefined') return whnf(new Term({app: [mbRecDef.value[1], nf2]})); else
+        return new Term({app: [nf, nf2]});
+
+        default:
+        return new Term({app: [nf, term.value[1]]})
+      }
+
+      case 'ann': throw new Error(`Unexpected term at whnf: ${term.toString()}`)
+      default: return term
     }
   }
 
   function infer (ctx, term, index = 0) {
     return Promise.resolve().then(() => {
       switch (term.ctor) {
-        case 'star': return new RType({value: [new Value({vstar: []})]});
+        case 'star': return new RType({value: [ new Value({vstar: []}) ]});
+
         case 'ann': return check(ctx, term.value[1], new Value({vstar: []}), index)
           .catch(e => { console.log(e);throw new Error(e.message + '\nAnnotation should have type Type') })
           .then(() => {
-            let type = evaluate(ctx, term.value[1]);
+            let type = evaluate(term.value[1], ctx);
             return check(ctx, term.value[0], type, index)
               .then(() => new RType({value: [type]}))
           });
+
         case 'pi': return infer(ctx, term.value[0], index)
           .then(type1 => {
             if (type1.value[0].ctor !== 'vstar') throw new Error('Pi domain should have type Type');
             return infer(
-              ctx.cons(new Name({local: [index]}), new RType({value: [evaluate(ctx, term.value[0])]}), 'sig'),
-              subst(new Term({freevar: [new Name({local: [index]})]}), term.value[1]), index + 1)
+              ctx.cons(new Decl({sig: [ new Name({local: [index]}),
+                new RType({value: [ evaluate(term.value[0], ctx) ]}) ]}), true),
+              subst(new Term({freevar: [ new Name({local: [index]}) ]}), term.value[1]), index + 1)
               .then(type2 => {
                 if (type2.value[0].ctor !== 'vstar') throw new Error('Pi range should have type Type');
                 return type2
               })
           });
-        case 'app': return infer(term.value[0], index)
+
+        case 'app': return infer(ctx, term.value[0], index)
           .then(mbVPi => {
             if (mbVPi.value[0].ctor !== 'vpi') throw new Error('Illegal application');
             let [type, func] = mbVPi.value;
             return check(ctx, term.value[1], type, index)
-              .then(() => new RType({value: [func(evaluate(ctx, term.value[1]))]}))
+              .then(() => new RType({value: [ func(evaluate(term.value[1], ctx)) ]}))
           });
+
         case 'freevar':
         let result = ctx.lookup(term.value[0], 'sig');
         if (result) return result;
         else throw new Error(`Unknown identifier: ${term.value[0].value[0]}`);
-        case 'lam': throw new error('Cannot infer type of lambda')
+
+        case 'lam': throw new Error('Cannot infer type of lambda')
       }
     })
   }
@@ -298,9 +449,10 @@ var R = (() => {
         case 'lam':
         if (type.ctor !== 'vpi') throw new Error(`Lambda has Pi type, not ${type.ctor}`);
         else return check(
-          ctx.cons(new Name({local: [index]}), new RType({value: [type.value[0]]}), 'sig'),
-          subst(new Term({freevar: [new Name({local: [index]})]}), term.value[0]),
+          ctx.cons(new Decl({sig: [ new Name({local: [index]}), new RType({value: [type.value[0]]}) ]}), true),
+          subst(new Term({freevar: [ new Name({local: [index]}) ]}), term.value[0]),
           type.value[1](vfree(new Name({local: [index]}))), index + 1)
+
         default: return infer(ctx, term, index)
           .then(res => {
             if (!quote(res.value[0]).equal(quote(type))) throw new Error('Type mismatch');
@@ -310,19 +462,27 @@ var R = (() => {
     })
   }
 
-  function evaluate (ctx, term) {
+  function evaluate (term, ctx = context) {
     switch (term.ctor) {
       case 'star': return new Value({vstar: []});
-      case 'ann': return evaluate(ctx, term.value[0]);
+
+      case 'ann': return evaluate(term.value[0], ctx);
+
       case 'pi': return new Value({vpi: [
-        evaluate(ctx, term.value[0]),
-        x => evaluate(ctx.cons(new Name({global: ['']}), new RType({value: [x]}), 'sig'), term.value[1])
+        evaluate(term.value[0], ctx),
+        x => evaluate(term.value[1],
+          ctx.cons(new Decl({sig: [ new Name({global: ['']}), new RType({value: [x]}) ]}), false))
       ]});
+
       case 'lam': return new Value({vlam: [
-        x => evaluate(ctx.cons(new Name({global: ['']}), new RType({value: [x]}), 'sig'), term.value[0])
+        x => evaluate(term.value[0],
+          ctx.cons(new Decl({sig: [ new Name({global: ['']}), new RType({value: [x]}) ]}), false))
       ]});
-      case 'app': return vapply(evaluate(ctx, term.value[0]), evaluate(ctx, term.value[1]));
+
+      case 'app': return vapply(evaluate(term.value[0], ctx), evaluate(term.value[1], ctx));
+
       case 'boundvar': return ctx['!!'](term.value[0]).value[0];
+
       case 'freevar':
       let mbVal = ctx.lookup(term.value[0], 'def');
       if (mbVal) return mbVal;
@@ -333,20 +493,26 @@ var R = (() => {
   function subst (term1, term2, index = 0) {
     switch (term2.ctor) {
       case 'star': return term2;
+
       case 'ann': return new Term({ann: [
         subst(term1, term2.value[0], index),
         subst(term1, term2.value[1], index)
       ]});
+
       case 'pi': return new Term({pi: [
         subst(term1, term2.value[0], index),
         subst(term1, term2.value[1], index + 1)
       ]});
+
       case 'lam': return new Term({lam: [subst(term1, term2.value[0], index + 1)]});
+
       case 'app': return new Term({app: [
         subst(term1, term2.value[0], index),
         subst(term1, term2.value[1], index)
       ]});
+
       case 'boundvar': return index === term2.value[0] ? term1 : term2;
+
       case 'freevar': return term2
     }
   }
@@ -357,8 +523,11 @@ var R = (() => {
 
   function vapply (value1, value2) {
     switch (value1.ctor) {
-      case 'vlam': return value1.value[1](value2);
-      case 'vneutral': return new Value({vneutral: [new Neutral({napp: [value1.value[0], value2]})]});
+      case 'vlam': return value1.value[0](value2);
+
+      case 'vneutral': return new Value({vneutral: [
+        new Neutral({napp: [value1.value[0], value2]})]});
+
       default: throw new Error('Bad value application')
     }
   }
@@ -366,11 +535,15 @@ var R = (() => {
   function quote (value, index = 0) {
     switch (value.ctor) {
       case 'vstar': return new Term({star: []});
+
       case 'vpi': return new Term({pi: [
         quote(value.value[0], index),
         quote(value.value[1](vfree(new Name({quote: [index]}))), index + 1)
       ]});
-      case 'vlam': return new Term({lam: [quote(value.value[0](vfree(new Name({quote: [index]}))), index + 1)]});
+
+      case 'vlam': return new Term({lam: [
+        quote(value.value[0](vfree(new Name({quote: [index]}))), index + 1)]});
+
       case 'vneutral': return nquote(value.value[0], index)
     }
   }
@@ -378,6 +551,7 @@ var R = (() => {
   function nquote (neutral, index) {
     switch (neutral.ctor) {
       case 'nfree': return boundfree(neutral.value[0], index);
+
       case 'napp': return new Term({app: [
         nquote(neutral.value[0], index),
         quote(neutral.value[1], index)
@@ -388,19 +562,154 @@ var R = (() => {
   function boundfree (name, index) {
     switch (name.ctor) {
       case 'quote': return new Term({boundvar: [index - name.value[0] - 1]});
+
       default: return new Term({freevar: [name]})
     }
   }
 
   let context = new Context();
-  return { Type, typecheck, evaluate, quote }
+  return { Context, context, Data, Sig, Term, Name, Decl, Item, typecheck, evaluate, quote }
 
 })();
 
 
-var Nat = new R.Type({ typeName: 'Nat' }, [
-  { ctorName: 'Z', toString: () => 'Z', valueOf: () => 0 },
-  { ctorName: 'S', tele: ['Nat'],
-    toString () { return 'S ' + this.value[0].toString() },
-    valueOf () { return this.value[0] + 1 } }
-])
+// Test cases
+
+var id = new R.Sig('id',
+  new R.Term({pi: [
+    new R.Term({star: []}),
+    new R.Term({pi: [
+      new R.Term({boundvar:[0]}),
+      new R.Term({boundvar:[1]})
+    ]})
+  ]})
+).Def(
+  new R.Term({lam: [
+    new R.Term({lam: [
+      new R.Term({boundvar:[0]})
+    ]})
+  ]})
+);
+
+
+var Void = new R.Data({ typeName: 'Void'});
+
+var Unit = new R.Data({ typeName: 'Unit' }, [
+  { ctorName: 'tt', toString: () => '()', valueOf: () => null }
+]);
+
+// var Bool = new R.Data({ typeName: 'Bool' }, [
+//   { ctorName: 'T', toString: () => 'T', valueOf: () => true },
+//   { ctorName: 'F', toString: () => 'F', valueOf: () => false }
+// ]);
+//
+// var Nat = new R.Data({ typeName: 'Nat' }, [
+//   { ctorName: 'Z', toString: () => 'Z', valueOf: () => 0 },
+//   { ctorName: 'S', ctorSig: [
+//       new R.Item({term: [ new R.Term({freevar: [ new R.Name({global: ['Nat']}) ]}) ]})
+//     ],
+//     toString () { return 'S' + this.value[0].toString() },
+//     valueOf () { return this.value[0].valueOf() + 1 } }
+// ]);
+//
+// var List = new R.Data({ typeName: 'List', typeSig: [
+//     new R.Item({term: [ new R.Term({ann: [
+//       new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
+//       new R.Term({star: []})
+//     ]}) ]})
+//   ] }, [
+//   { ctorName: 'Nil', toString: () => '[]', valueOf: () => [] },
+//   { ctorName: 'Cons', ctorSig: [
+//       new R.Item({term: [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}) ]}),          // Erased!
+//       new R.Item({term: [ new R.Term({app: [
+//         new R.Term({freevar: [ new R.Name({global: ['List']}) ]}),
+//         new R.Term({freevar: [ new R.Name({global: ['A']}) ]})
+//       ]}) ]})
+//     ],
+//     toString () { return this.value[0].toString() + ' : ' + this.value[1].toString() },
+//     valueOf () { return this.value[1].concat([this.value[0]]) } }
+// ]);
+//
+// var Vec = new R.Data({ typeName: 'Vec', typeSig: [
+//     new R.Item({term: [ new R.Term({ann: [
+//       new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
+//       new R.Term({star: []})
+//     ]}) ]}),
+//     new R.Item({term: [ new R.Term({ann: [
+//       new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
+//       new R.Term({freevar: [ new R.Name({global: ['Nat']}) ]})
+//     ]}) ]})
+//   ] }, [
+//   { ctorName: 'Nil', ctorSig: [
+//       new R.Item({constraint: [
+//         new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
+//         new R.Term({freevar: [ new R.Name({global: ['Z']}) ]})
+//       ]})
+//     ],
+//     toString: () => '<>', valueOf: () => [] },
+//   { ctorName: 'Cons', ctorSig: [
+//       new R.Item({term: [ new R.Term({ann: [
+//         new R.Term({freevar: [ new R.Name({global: ['m']}) ]}),
+//         new R.Term({freevar: [ new R.Name({global: ['Nat']}) ]})
+//       ]}) ]}),                                                        // Erased!
+//       new R.Item({term: [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}) ]}),
+//       new R.Item({term: [ new R.Term({app: [
+//         new R.Term({app: [
+//           new R.Term({freevar: [ new R.Name({global: ['Vec']}) ]}),
+//           new R.Term({freevar: [ new R.Name({global: ['A']}) ]})
+//         ]}),
+//         new R.Term({freevar: [ new R.Name({global: ['m']}) ]})
+//       ]}) ]}),
+//       new R.Item({constraint: [
+//         new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
+//         new R.Term({app: [
+//           new R.Term({freevar: [ new R.Name({global: ['S']}) ]}),
+//           new R.Term({freevar: [ new R.Name({global: ['m']}) ]})
+//         ]})
+//       ]})
+//     ],
+//     toString () { return this.value[0].toString() + ' :: ' + this.value[1].toString() },
+//     valueOf () { return this.value[1].concat([this.value[0]]) } }
+// ]);
+//
+// var Fin = new R.Data({ typeName: 'Fin', typeSig: [
+//     new R.Item({term: [ new R.Term({ann: [
+//       new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
+//       new R.Term({freevar: [ new R.Name({global: ['Nat']}) ]})
+//     ]}) ]})
+//   ] }, [
+//   { ctorName: 'Zero', ctorSig: [
+//       new R.Item({term: [ new R.Term({ann: [
+//         new R.Term({freevar: [ new R.Name({global: ['m']}) ]}),
+//         new R.Term({freevar: [ new R.Name({global: ['Nat']}) ]})
+//       ]}) ]}),                                                       // Erased!
+//       new R.Item({constraint: [
+//         new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
+//         new R.Term({app: [
+//           new R.Term({freevar: [ new R.Name({global: ['S']}) ]}),
+//           new R.Term({freevar: [ new R.Name({global: ['m']}) ]})
+//         ]})
+//       ]})
+//     ],
+//     toString: () => `Zero [${this.value[0].toString()}]`,
+//     valueOf: () => this.value[0].valueOf() - 1 },
+//   { ctorName: 'Succ', ctorSig: [
+//       new R.Item({term: [ new R.Term({ann: [
+//         new R.Term({freevar: [ new R.Name({global: ['m']}) ]}),
+//         new R.Term({freevar: [ new R.Name({global: ['Nat']}) ]})
+//       ]}) ]}),                                                       // Erased!
+//       new R.Item({constraint: [
+//         new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
+//         new R.Term({app: [
+//           new R.Term({freevar: [ new R.Name({global: ['S']}) ]}),
+//           new R.Term({freevar: [ new R.Name({global: ['m']}) ]})
+//         ]})
+//       ]}),
+//       new R.Item({term: [ new R.Term({app: [
+//         new R.Term({freevar: [ new R.Name({global: ['Fin']}) ]}),
+//         new R.Term({freevar: [ new R.Name({global: ['m']}) ]})
+//       ]}) ]})
+//     ],
+//     toString: () => `Succ [${this.value[1].valueOf() - 1}] ` + this.value[1].toString(),
+//     valueOf: () => this.value[1].valueOf() - 1 }
+// ])
