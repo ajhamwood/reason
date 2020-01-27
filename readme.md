@@ -1,6 +1,6 @@
 ## Just experimenting for the time being
 
-This project aims to create a dependently-typed language interpreter to enable Javascript-native 'certifiable' (i.e. provable) programs.
+This project aims to create a dependently-typed language interpreter in Javascript to enable native 'certifiable' (i.e. provable) programs.
 
 For the most part, the nuts and bolts have been and are being lifted wholesale from Andres Loeh's LambdaPi and Stephanie Weirich's Pi-Forall.
 
