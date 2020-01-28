@@ -133,7 +133,7 @@ var R = (() => {
               return new Ctor({ctor: [new Name({global: [ctorName]}), new Tele(...ctorSig)]})
             })
           ]});
-      sequence(() => typecheck(data)
+      seqAsync(() => typecheck(data)
         .then(res => ctorsObj.state = 'checked')
         .catch(error => Object.assign(ctorsObj, {state: 'failed', error}))
         .then(() => klass = ({ [typeName]: class {
@@ -151,34 +151,36 @@ var R = (() => {
           toString () { return `<${typeName}>` }
         } })[typeName] )
       );
-      return class {
-        constructor (...args) {
-          return klass !== null ?
-            new klass(...args) :
-            new Proxy(this, { get (_, prop) {
-              let error = `Typechecking not yet completed for ${typeName}`;
-              console.warn(error);
-              switch (prop) {
-                case 'state': return 'unchecked'
-                case 'tcon': case 'ctor': return null
-                case 'error': return new Error(error)
-                default: return () => null
-              }
-            } })
-        }
+      return (...args) => { // The price of mixing sync and async code :(
+        let target = class {}, handler = {
+          get (_, prop) {
+            let error = `Typechecking not yet completed for ${typeName}`;
+            console.warn(error);
+            switch (prop) {
+              case 'state': return 'unchecked'
+              case 'tcon': case 'ctor': return null
+              case 'error': return new Error(error)
+              default: return () => null
+            }
+          }
+        };
+        seqSync(() => [handler, target] = [Reflect, new klass(...args)]);
+        return new Proxy(Object.create(null), new Proxy(Object.create(null), {
+          get (_, prop) { return (...as) => handler[prop].apply(null, [target, ...as.slice(1)]) }
+        }))
       }
     }
   };
   class Sig {
     constructor (string, hint) {
-      sequence(() => typecheck(new Decl({sig: [ new Name({global: [string]}), hint ]})))
+      seqAsync(() => typecheck(new Decl({sig: [ new Name({global: [string]}), hint ]})))
       Object.assign(this, {
         name: new Name({global: [string]}),
         Def: expr => {
-          sequence(() => typecheck(new Decl({def: [ new Name({global: [string]}), expr ]})))
+          seqAsync(() => typecheck(new Decl({def: [ new Name({global: [string]}), expr ]})))
             .then(type => Object.assign(this, {
               type, expr, state: 'checked',
-              apply: (...args) => sequence(() => typecheck(new Decl({def: [ new Name({global: ['self']}),
+              apply: (...args) => seqAsync(() => typecheck(new Decl({def: [ new Name({global: ['self']}),
                 args.reduce((a, x) => new Term({app: [ a, x.term ]}), new Term({freevar: [ this.name ]}))
               ]})).then(() => this.term = new Term({freevar: [ this.name ]}))) // TODO: return curried function
             }))
@@ -513,7 +515,7 @@ var R = (() => {
         result = ctx.lookup(term.value[0], 'data')
         console.log(result);
         if (result.length !== term.value.length - 1)
-          throw new Error(`Data constructor give wrong number of arguments (${term.value.length - 1} instead of ${result.length})`);
+          throw new Error(`Data constructor given wrong number of arguments (${term.value.length - 1} instead of ${result.length})`);
         return tcArgTele(ctx, term.value.slice(1), result)
 
         case 'dcon':
@@ -650,8 +652,11 @@ var R = (() => {
 
   let context = new Context(),
       self = { Context, context, Data, Sig, Term, Name, Decl, Item, typecheck, evaluate, quote };
-  const sequence = (r => p => r = p ? r.then(p) : r)(Promise.resolve());
-  Object.defineProperty(self, 'ready', { get () { return sequence() } });
+  const { seqSync, seqAsync } = ((p, count) => ({
+          seqSync: fn => count.synced() ? fn() : seqAsync(fn),
+          seqAsync: fn => count.next(p = fn ? p.then(fn) : p)
+        }))(Promise.resolve(), ((a, s) => ({synced: () => s === a, next: p => (s++, p.then(() => a++))}))(0, 0));
+  Object.defineProperty(self, 'ready', { get () { return seqAsync() } });
 
   return self
 
@@ -683,9 +688,10 @@ var Unit = new R.Data({ typeName: 'Unit', valueOf: () => null }, [
   { ctorName: 'tt', toString: () => '()' }
 ]);
 
+console.log(Unit().tt());
 R.ready.then(() => {
-  console.log(new Unit().tt())
-  return id.apply(new Unit())
+  console.log(Unit().tt())
+  return id.apply(Unit())
   // target syntax: id(Unit(), Unit().tt())
 }).then(res => {
   console.log(res)
