@@ -110,8 +110,27 @@ var R = (() => {
 
   // Declarations
 
-  class Data {
+  function readyable (t0, h0) {
+    let target = t0, handler = h0;
+    return class { constructor () { return {
+      proxy: new Proxy(Object.create(null), new Proxy(Object.create(null), {
+        get (_, prop) { return (...as) => handler[prop].apply(null, [target, ...as.slice(1)]) }
+      })),
+      setTraps (t, h) { [target, handler] = [t || target, h || handler] }
+    } } }
+  }
+
+  class Data extends readyable(class {}, { get (obj, prop) {
+    let error = `Typechecking not yet completed for '${obj.ctor}'`;
+    console.warn(error);
+    switch (prop) {
+      case 'tcon': return null
+      case 'error': return new Error(error)
+      default: return () => null
+    }
+  } }) {
     constructor ({ typeName, typeSig = [], ...builtins }, ctors = []) {
+      let { proxy, setTraps } = super();
       if (!typeName || !typeof typeName === 'string') throw new Error('Bad type name');
       let klass = null, ctorsObj = {},
           data = new Decl({data: [
@@ -127,14 +146,19 @@ var R = (() => {
                   super(...ctorParams);
                   Object.assign(this, {value: ctorParams, term: new Term({dcon: [
                     new Name({global: [ctorName]}), ...ctorParams.map(x => x.term)
-                  ]}), ...builtins})
+                  ]}), ...builtins});
+                  for (let [ctor, v] of Object.entries(ctorsObj)) if (typeof v === 'function') delete this[ctor]
                 }
               } })[ctorName]();
               return new Ctor({ctor: [new Name({global: [ctorName]}), new Tele(...ctorSig)]})
             })
-          ]});
+          ]}),
+          self = Object.assign((...args) => {
+            seqSync(() => setTraps(new klass(...args), Reflect));
+            return proxy
+          }, { state: 'unchecked', ctor: typeName });
       seqAsync(() => typecheck(data)
-        .then(res => ctorsObj.state = 'checked')
+        .then(() => ctorsObj.state = 'checked') // type?
         .catch(error => Object.assign(ctorsObj, {state: 'failed', error}))
         .then(() => klass = ({ [typeName]: class {
           sig = new Tele(...typeSig)
@@ -151,44 +175,37 @@ var R = (() => {
           toString () { return `<${typeName}>` }
         } })[typeName] )
       );
-      return (...args) => { // The price of mixing sync and async code :(
-        let target = class {}, handler = {
-          get (_, prop) {
-            let error = `Typechecking not yet completed for ${typeName}`;
-            console.warn(error);
-            switch (prop) {
-              case 'state': return 'unchecked'
-              case 'tcon': case 'ctor': return null
-              case 'error': return new Error(error)
-              default: return () => null
-            }
-          }
-        };
-        seqSync(() => [handler, target] = [Reflect, new klass(...args)]);
-        return new Proxy(Object.create(null), new Proxy(Object.create(null), {
-          get (_, prop) { return (...as) => handler[prop].apply(null, [target, ...as.slice(1)]) }
-        }))
-      }
+      setTraps(self);
+      return self
     }
   };
-  class Sig {
+  class Sig extends readyable(class {}, { get (obj, prop) {
+    let error = `Typechecking not yet completed for '${obj.ctor}'`;
+    console.warn(error);
+    switch (prop) {
+      case 'error': return new Error(error)
+      default: return null
+    }
+  }, apply () { return null } }) {
     constructor (string, hint) {
+      let { proxy, setTraps } = super();
       seqAsync(() => typecheck(new Decl({sig: [ new Name({global: [string]}), hint ]})))
-      Object.assign(this, {
-        name: new Name({global: [string]}),
+      return Object.assign(this, {
+        term: new Term({freevar: [ new Name({global: [string]}) ]}),
         Def: expr => {
-          seqAsync(() => typecheck(new Decl({def: [ new Name({global: [string]}), expr ]})))
-            .then(type => Object.assign(this, {
-              type, expr, state: 'checked',
-              apply: (...args) => seqAsync(() => typecheck(new Decl({def: [ new Name({global: ['self']}),
-                args.reduce((a, x) => new Term({app: [ a, x.term ]}), new Term({freevar: [ this.name ]}))
-              ]})).then(() => this.term = new Term({freevar: [ this.name ]}))) // TODO: return curried function
-            }))
-            .catch(error => Object.assign(this, {state: 'failed', error}));
-          this.state = 'unchecked';
-          return this
+          let self = Object.assign((...args) => {
+            seqAsync(() => typecheck(new Decl({def: [ new Name({global: [ context.fresh() ]}),
+              args.reduce((a, x) => new Term({app: [ a, x.term ]}), this.term)
+            ]})).then(res => setTraps(Object.assign(self, res), Reflect)))
+            return proxy
+          }, { state: 'unchecked', ctor: string });
+          seqAsync(() => typecheck(new Decl({def: [ new Name({global: [string]}), expr ]}))
+            .then(({type}) => Object.assign(self, { type, state: 'checked' }))
+            .catch(error => Object.assign(self, { error, state: 'failed' })));
+          setTraps(self);
+          return self
         }
-      })
+      });
     }
   };
 
@@ -277,7 +294,6 @@ var R = (() => {
   }
   class Value extends AST('vlam', 'vstar', 'vpi', 'vneutral') {}
   class Neutral extends AST('nfree', 'napp') {}
-  class RType extends AST('value') {}
 
   class Decl extends AST('sig', 'def', 'recdef', 'data', 'datasig') {}
   class Ctor extends AST('ctor') {}
@@ -309,21 +325,22 @@ var R = (() => {
       //dup?
       //whnf
       return check(ctx, term, new Value({vstar: []}))
-        // TODO: remove RType constructor?
-        .then(() => ctx.push(new Decl({sig: [name, new RType({value: [evaluate(term, ctx)]})]})))
+        .then(() => ctx.push(new Decl({sig: [name, evaluate(term, ctx)]})))
 
       case 'def':
       //dup?
       if (typeof ctx.lookup(name, 'def') === 'undefined') {
-        let mbType = ctx.lookup(name, 'sig');
-        return typeof mbType === 'undefined' ?
-          infer(ctx, term).then(type =>
+        let value, mbType = ctx.lookup(name, 'sig');
+        return (typeof mbType === 'undefined' ?
+          infer(ctx, term).then(type => {
             ctx.push(new Decl({sig: [name, type]}))
-              .push(new Decl({def: [name, evaluate(term, ctx)]}))
-          ) :
-          check(ctx, term, mbType.value[0]).then(type => // recursive?
-            ctx.push(new Decl({def: [name, evaluate(term, ctx)]}))
-          )
+              .push(new Decl({def: [name, value = evaluate(term, ctx)]}));
+            return {type, value}
+          }) :
+          check(ctx, term, mbType).then(() => {// recursive?
+            ctx.push(new Decl({def: [name, value = evaluate(term, ctx)]}));
+            return {type: mbType, value}
+          }))
       } else throw new Error(name.value[0] + ' already defined');
 
       case 'data':
@@ -385,7 +402,7 @@ var R = (() => {
     switch (term.ctor) {
       case 'freevar':
       let mbDef = ctx.lookup(term.value[0], 'def');
-      return typeof mbDef === 'undefined' ? term : whnf(ctx, mbDef);
+      return typeof mbDef === 'undefined' ? term : whnf(ctx, mbDef.value[0]);
 
       case 'app':
       let nf = whnf(ctx, term.value[0]);
@@ -397,7 +414,7 @@ var R = (() => {
         case 'freevar':
         let nf2 = whnf(ctx, term.value[1]);
         // let mbRecDef = ctx.lookup(nf.value[0], 'recdef');
-        // if (typeof mbRecDef === 'undefined') return whnf(new Term({app: [mbRecDef.value[1], nf2]})); else
+        // if (typeof mbRecDef === 'undefined') return whnf(new Term({app: [mbRecDef.value[0].value[1], nf2]})); else
         return new Term({app: [nf, nf2]});
 
         default:
@@ -424,7 +441,7 @@ var R = (() => {
           .then(() => eterms.push())
       }
     })
-    return seq.then(() => console.log(eterms)).then(() => eterms)
+    return seq.then(() => eterms)
   }
 
   function doSubst (ctx, name, term, items) {
@@ -474,36 +491,34 @@ var R = (() => {
     return Promise.resolve().then(() => {
       let result;
       switch (term.ctor) {
-        case 'star': return new RType({value: [ new Value({vstar: []}) ]});
+        case 'star': return new Value({vstar: []});
 
         case 'ann': return check(ctx, term.value[1], new Value({vstar: []}), index)
-          .catch(e => { console.log(e);throw new Error(e.message + '\nAnnotation should have type Type') })
+          .catch(e => { throw new Error(e.message + '\nAnnotation should have type Type') })
           .then(() => {
             let type = evaluate(term.value[1], ctx);
             return check(ctx, term.value[0], type, index)
-              .then(() => new RType({value: [type]}))
+              .then(() => type)
           });
 
         case 'pi': return infer(ctx, term.value[0], index)
           .then(type1 => {
-            if (type1.value[0].ctor !== 'vstar') throw new Error('Pi domain should have type Type');
+            if (type1.ctor !== 'vstar') throw new Error('Pi domain should have type Type');
             return infer(
-              ctx.cons(new Decl({sig: [ new Name({local: [index]}),
-                new RType({value: [ evaluate(term.value[0], ctx) ]}) ]}), true),
+              ctx.cons(new Decl({sig: [ new Name({local: [index]}), evaluate(term.value[0], ctx) ]}), true),
               subst(new Term({freevar: [ new Name({local: [index]}) ]}), term.value[1]), index + 1)
               .then(type2 => {
-                if (type2.value[0].ctor !== 'vstar') throw new Error('Pi range should have type Type');
+                if (type2.ctor !== 'vstar') throw new Error('Pi range should have type Type');
                 return type2
               })
           });
 
         case 'app': return infer(ctx, term.value[0], index)
           .then(mbVPi => {
-            console.log(ctx, term, mbVPi)
-            if (mbVPi.value[0].ctor !== 'vpi') throw new Error('Illegal application');
+            if (mbVPi.ctor !== 'vpi') throw new Error('Illegal application');
             let [type, func] = mbVPi.value;
             return check(ctx, term.value[1], type, index)
-              .then(() => new RType({value: [ func(evaluate(term.value[1], ctx)) ]}))
+              .then(() => func(evaluate(term.value[1], ctx)))
           });
 
         case 'freevar':
@@ -513,13 +528,13 @@ var R = (() => {
 
         case 'tcon':
         result = ctx.lookup(term.value[0], 'data')
-        console.log(result);
         if (result.length !== term.value.length - 1)
           throw new Error(`Data constructor given wrong number of arguments (${term.value.length - 1} instead of ${result.length})`);
         return tcArgTele(ctx, term.value.slice(1), result)
+          .then(() => new Value({vstar: []}))
 
         case 'dcon':
-        return
+        throw new Error('unimplemented');
 
         case 'lam': throw new Error('Cannot infer type of lambda')
       }
@@ -532,20 +547,21 @@ var R = (() => {
         case 'lam':
         if (type.ctor !== 'vpi') throw new Error(`Lambda has Pi type, not ${type.ctor}`);
         else return check(
-          ctx.cons(new Decl({sig: [ new Name({local: [index]}), new RType({value: [type.value[0]]}) ]}), true),
+          ctx.cons(new Decl({sig: [ new Name({local: [index]}), type.value[0] ]}), true),
           subst(new Term({freevar: [ new Name({local: [index]}) ]}), term.value[0]),
           type.value[1](vfree(new Name({local: [index]}))), index + 1)
 
         default: return infer(ctx, term, index)
           .then(res => {
-            if (!quote(res.value[0]).equal(quote(type))) throw new Error('Type mismatch');
-            else return new RType({value: [type]})
+            if (!quote(res).equal(quote(type))) throw new Error('Type mismatch');
+            else return type
           })
       }
     })
   }
 
   function evaluate (term, ctx = context) {
+    let mbVal;
     switch (term.ctor) {
       case 'star': return new Value({vstar: []});
 
@@ -554,22 +570,26 @@ var R = (() => {
       case 'pi': return new Value({vpi: [
         evaluate(term.value[0], ctx),
         x => evaluate(term.value[1],
-          ctx.cons(new Decl({sig: [ new Name({global: ['']}), new RType({value: [x]}) ]}), false))
+          ctx.cons(new Decl({sig: [ new Name({global: ['']}), x ]}), false))
       ]});
 
       case 'lam': return new Value({vlam: [
         x => evaluate(term.value[0],
-          ctx.cons(new Decl({sig: [ new Name({global: ['']}), new RType({value: [x]}) ]}), false))
+          ctx.cons(new Decl({sig: [ new Name({global: ['']}), x ]}), false))
       ]});
 
       case 'app': return vapply(evaluate(term.value[0], ctx), evaluate(term.value[1], ctx));
 
-      case 'boundvar': return ctx['!!'](term.value[0]).value[0];
+      case 'boundvar': return ctx['!!'](term.value[0]);
 
       case 'freevar':
-      let mbVal = ctx.lookup(term.value[0], 'def');
+      mbVal = ctx.lookup(term.value[0], 'def');
       if (mbVal) return mbVal;
       else return vfree(term.value[0])
+
+      case 'tcon': return vfree(term.value[0]);
+
+      case 'dcon': throw new Error('unimplemented')
     }
   }
 
@@ -596,7 +616,10 @@ var R = (() => {
 
       case 'boundvar': return index === term2.value[0] ? term1 : term2;
 
-      case 'freevar': return term2
+      case 'freevar': return term2;
+
+      case 'tcon':
+      case 'dcon': throw new Error('unimplemented')
     }
   }
 
@@ -650,9 +673,9 @@ var R = (() => {
     }
   }
 
-  let context = new Context(),
-      self = { Context, context, Data, Sig, Term, Name, Decl, Item, typecheck, evaluate, quote };
-  const { seqSync, seqAsync } = ((p, count) => ({
+  const context = new Context(),
+        self = { Context, context, Data, Sig, Term, Name, Decl, Item, typecheck, evaluate, quote },
+        { seqSync, seqAsync } = ((p, count) => ({
           seqSync: fn => count.synced() ? fn() : seqAsync(fn),
           seqAsync: fn => count.next(p = fn ? p.then(fn) : p)
         }))(Promise.resolve(), ((a, s) => ({synced: () => s === a, next: p => (s++, p.then(() => a++))}))(0, 0));
@@ -688,13 +711,18 @@ var Unit = new R.Data({ typeName: 'Unit', valueOf: () => null }, [
   { ctorName: 'tt', toString: () => '()' }
 ]);
 
+let idU, tt;
 console.log(Unit().tt());
 R.ready.then(() => {
   console.log(Unit().tt())
-  return id.apply(Unit())
-  // target syntax: id(Unit(), Unit().tt())
-}).then(res => {
-  console.log(res)
+  console.log(id)
+  idU = id(Unit())
+  tt = id(Unit(), Unit().tt())
+  console.log(idU.type && R.quote(idU.type))
+  return R.ready
+}).then(() => {
+  console.log(tt)
+  console.log(idU(Unit().tt()))
 })
 
 // var Bool = new R.Data({ typeName: 'Bool' }, [
