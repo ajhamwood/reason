@@ -110,27 +110,26 @@ var R = (() => {
 
   // Declarations
 
-  function readyable (t0, h0) {
-    let target = t0, handler = h0;
-    return class { constructor () { return {
-      proxy: new Proxy(Object.create(null), new Proxy(Object.create(null), {
-        get (_, prop) { return (...as) => handler[prop].apply(null, [target, ...as.slice(1)]) }
+  class Readyable { constructor (target, handler) {
+    return {
+      proxy: new Proxy(({ nop () {} }).nop, new Proxy(Object.create(null), {
+        get (_, prop) { return (...as) => (prop in handler ? handler[prop] : Reflect[prop])
+          .apply(null, [target, ...as.slice(1)]) }
       })),
-      setTraps (t, h) { [target, handler] = [t || target, h || handler] }
-    } } }
-  }
-
-  class Data extends readyable(class {}, { get (obj, prop) {
-    let error = `Typechecking not yet completed for '${obj.ctor}'`;
-    console.warn(error);
-    switch (prop) {
-      case 'tcon': return null
-      case 'error': return new Error(error)
-      default: return () => null
+      setProxy (t, h) { [target, handler] = [t || target, h || handler] }
     }
-  } }) {
+  } };
+  class Data extends Readyable {
     constructor ({ typeName, typeSig = [], ...builtins }, ctors = []) {
-      let { proxy, setTraps } = super();
+      let { proxy, setProxy } = super(class {}, { get (_, prop) {
+        let error = `Typechecking not yet completed for '${typeName}' (while calling '${prop}')`;
+        console.warn(error);
+        switch (prop) {
+          case 'tcon': return null
+          case 'error': return new Error(error)
+          default: return () => null
+        }
+      } });
       if (!typeName || !typeof typeName === 'string') throw new Error('Bad type name');
       let klass = null, ctorsObj = {},
           data = new Decl({data: [
@@ -154,7 +153,7 @@ var R = (() => {
             })
           ]}),
           self = Object.assign((...args) => {
-            seqSync(() => setTraps(new klass(...args), Reflect));
+            seqSync(() => setProxy(new klass(...args), Reflect));
             return proxy
           }, { state: 'unchecked', ctor: typeName });
       seqAsync(() => typecheck(data)
@@ -175,37 +174,52 @@ var R = (() => {
           toString () { return `<${typeName}>` }
         } })[typeName] )
       );
-      setTraps(self);
+      setProxy(self);
       return self
     }
   };
-  class Sig extends readyable(class {}, { get (obj, prop) {
-    let error = `Typechecking not yet completed for '${obj.ctor}'`;
-    console.warn(error);
-    switch (prop) {
-      case 'error': return new Error(error)
-      default: return null
-    }
-  }, apply () { return null } }) {
+  class Sig extends Readyable {
     constructor (string, hint) {
-      let { proxy, setTraps } = super();
-      seqAsync(() => typecheck(new Decl({sig: [ new Name({global: [string]}), hint ]})))
-      return Object.assign(this, {
-        term: new Term({freevar: [ new Name({global: [string]}) ]}),
-        Def: expr => {
-          let self = Object.assign((...args) => {
-            seqAsync(() => typecheck(new Decl({def: [ new Name({global: [ context.fresh() ]}),
-              args.reduce((a, x) => new Term({app: [ a, x.term ]}), this.term)
-            ]})).then(res => setTraps(Object.assign(self, res), Reflect)))
+      let h = { get (obj, prop) {
+            if (prop in obj) return obj[prop];
+            let error = `Typechecking not yet completed for ${typeof string === 'string' ? `'${string}'` : '#' + string} (while calling '${prop}')`;
+            console.warn(error);
+            switch (prop) {
+              case 'error': return new Error(error);
+              default: return null
+            }
+          } }, { proxy, setProxy } = super(class {}, h),
+          Def = expr => {
+            self = { ...self, state: 'unchecked', ctor: string };
+            delete self.Def;
+            let { apply } = { apply (obj, that, args) {
+              let wildCard = context.fresh(), child = new Sig(wildCard);
+              seqAsync(() => typecheck(new Decl({def: [ new Name({global: [ wildCard ]}),
+                child.term = args.reduce((a, x) => new Term({app: [ a, x.term ]}), self.term)
+              ]})).then(res => { child.Sig(quote(res.type)).Def(quote(res.value)) }))
+              return child
+            } };
+            seqAsync(() => typecheck(new Decl({def: [ new Name({global: [string]}), expr ]}))
+              .then(res => self = { ...self, ...res, state: 'checked' })
+              .catch(error => self = { ...self, error, state: 'failed' }))
+              .then(() => setProxy(self, { apply }));
+            setProxy(self, { ...h, apply });
             return proxy
-          }, { state: 'unchecked', ctor: string });
-          seqAsync(() => typecheck(new Decl({def: [ new Name({global: [string]}), expr ]}))
-            .then(({type}) => Object.assign(self, { type, state: 'checked' }))
-            .catch(error => Object.assign(self, { error, state: 'failed' })));
-          setTraps(self);
-          return self
-        }
-      });
+          },
+          self = { term: new Term({freevar: [ new Name({global: [string]}) ]}) },
+          seqTypecheck = hint => {
+            self = { ...self, Def };
+            delete self.Sig;
+            seqAsync(() => typecheck(new Decl({sig: [ new Name({global: [string]}), hint ]}))
+              .then(res => self = { ...self, ...res, state: 'checked' })
+              .catch(error => self = { ...self, error, state: 'failed' }));
+            setProxy(self);
+            return proxy
+          };
+      if (typeof hint === 'undefined') self = { ...self, state: 'unchecked', Sig: seqTypecheck };
+      else return seqTypecheck(hint);
+      setProxy(self);
+      return proxy
     }
   };
 
@@ -293,7 +307,7 @@ var R = (() => {
     }
   }
   class Value extends AST('vlam', 'vstar', 'vpi', 'vneutral') {}
-  class Neutral extends AST('nfree', 'napp') {}
+  class Neutral extends AST('nfree', 'ntcon', 'ndcon', 'napp') {}
 
   class Decl extends AST('sig', 'def', 'recdef', 'data', 'datasig') {}
   class Ctor extends AST('ctor') {}
@@ -324,12 +338,16 @@ var R = (() => {
       case 'sig':
       //dup?
       //whnf
-      return check(ctx, term, new Value({vstar: []}))
-        .then(() => ctx.push(new Decl({sig: [name, evaluate(term, ctx)]})))
+      let value, type = new Value({vstar: []});
+      return check(ctx, term, type).then(() => {
+        ctx.push(new Decl({sig: [name, value = evaluate(term, ctx)]}));
+        return {type, value}
+      })
 
       case 'def':
       //dup?
-      if (typeof ctx.lookup(name, 'def') === 'undefined') {
+      let mbValue = ctx.lookup(name, 'def');
+      if (typeof mbValue === 'undefined') {
         let value, mbType = ctx.lookup(name, 'sig');
         return (typeof mbType === 'undefined' ?
           infer(ctx, term).then(type => {
@@ -341,7 +359,8 @@ var R = (() => {
             ctx.push(new Decl({def: [name, value = evaluate(term, ctx)]}));
             return {type: mbType, value}
           }))
-      } else throw new Error(name.value[0] + ' already defined');
+      } else if (term.equal(quote(mbValue))) return Promise.resolve({type: ctx.lookup(name, 'sig'), value: mbValue})
+      else throw new Error(name.value[0] + ' already defined');
 
       case 'data':
       // dup?
@@ -587,9 +606,9 @@ var R = (() => {
       if (mbVal) return mbVal;
       else return vfree(term.value[0])
 
-      case 'tcon': return vfree(term.value[0]);
+      case 'tcon': return new Value({vneutral: [ new Neutral({ntcon: term.value}) ]});
 
-      case 'dcon': throw new Error('unimplemented')
+      case 'dcon': return new Value({vneutral: [ new Neutral({ndcon: term.value}) ]});
     }
   }
 
@@ -616,10 +635,9 @@ var R = (() => {
 
       case 'boundvar': return index === term2.value[0] ? term1 : term2;
 
-      case 'freevar': return term2;
-
+      case 'freevar':
       case 'tcon':
-      case 'dcon': throw new Error('unimplemented')
+      case 'dcon': return term2;
     }
   }
 
@@ -656,20 +674,19 @@ var R = (() => {
 
   function nquote (neutral, index) {
     switch (neutral.ctor) {
-      case 'nfree': return boundfree(neutral.value[0], index);
+      case 'nfree':
+      let name = neutral.value[0];
+      if (name.ctor === 'quote') return new Term({boundvar: [index - name.value[0] - 1]});
+      else return new Term({freevar: [name]});
+
+      case 'ntcon': return new Term({tcon: neutral.value});
+
+      case 'ndcon': return new Term({dcon: neutral.value});
 
       case 'napp': return new Term({app: [
         nquote(neutral.value[0], index),
         quote(neutral.value[1], index)
       ]})
-    }
-  }
-
-  function boundfree (name, index) {
-    switch (name.ctor) {
-      case 'quote': return new Term({boundvar: [index - name.value[0] - 1]});
-
-      default: return new Term({freevar: [name]})
     }
   }
 
@@ -713,16 +730,19 @@ var Unit = new R.Data({ typeName: 'Unit', valueOf: () => null }, [
 
 let idU, tt;
 console.log(Unit().tt());
+console.log(id.type && R.quote(id.type), id.state)
 R.ready.then(() => {
   console.log(Unit().tt())
-  console.log(id)
-  idU = id(Unit())
-  tt = id(Unit(), Unit().tt())
-  console.log(idU.type && R.quote(idU.type))
+  console.log(id.type && R.quote(id.type), id.state)
+  idU = id(Unit());
+  // tt = id(Unit(), Unit().tt())
+  console.log(idU.type && R.quote(idU.type), idU.state)
   return R.ready
+    .then(() => new Promise(r => setTimeout(r, 0))) // TODO: eliminate this requirement
 }).then(() => {
-  console.log(tt)
-  console.log(idU(Unit().tt()))
+  console.log(idU.type && R.quote(idU.type), idU.state)
+//   // console.log(tt)
+//   console.log(idU(Unit().tt()))
 })
 
 // var Bool = new R.Data({ typeName: 'Bool' }, [
