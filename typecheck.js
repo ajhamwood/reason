@@ -125,7 +125,6 @@ var R = (() => {
         let error = `Typechecking not yet completed for '${typeName}' (while calling '${prop}')`;
         console.warn(error);
         switch (prop) {
-          case 'tcon': return null
           case 'error': return new Error(error)
           default: return () => null
         }
@@ -144,7 +143,7 @@ var R = (() => {
                 constructor () {
                   super(...ctorParams);
                   Object.assign(this, {value: ctorParams, term: new Term({dcon: [
-                    new Name({global: [ctorName]}), ...ctorParams.map(x => x.term)
+                    new Name({global: [ctorName]}), ctorParams.map(x => x.term)
                   ]}), ...builtins});
                   for (let [ctor, v] of Object.entries(ctorsObj)) if (typeof v === 'function') delete this[ctor]
                 }
@@ -168,7 +167,7 @@ var R = (() => {
             if (ctorsObj.state = 'checked') Object.assign(this, ctorsObj);
             else if (ctorsObj.state = 'failed') throw ctorsObj.error;
             Object.assign(this, {value: typeParams, term: new Term({tcon: [
-              new Name({global: [typeName]}), ...typeParams.map(x => x.term)
+              new Name({global: [typeName]}), typeParams.map(x => x.term)
             ]}), ...builtins})
           }
           toString () { return `<${typeName}>` }
@@ -196,7 +195,7 @@ var R = (() => {
               let wildCard = context.fresh(), child = new Sig(wildCard);
               seqAsync(() => typecheck(new Decl({def: [ new Name({global: [ wildCard ]}),
                 child.term = args.reduce((a, x) => new Term({app: [ a, x.term ]}), self.term)
-              ]})).then(res => { child.Sig(quote(res.type)).Def(quote(res.value)) }))
+              ]})).then(res => { child.Sig(quote(res.type)).Def(quote(res.value)) })) // This is why R.ready uses setTimeout
               return child
             } };
             seqAsync(() => typecheck(new Decl({def: [ new Name({global: [string]}), expr ]}))
@@ -255,10 +254,13 @@ var R = (() => {
     '!!' (i) {
       return this.indices[this.indices.length - i - 1].value[1]
     }
-    lookup (name, ctor) {
-      let ret = this.indices.find(decl => ctor === 'ctor' ?
-        (decl.ctor === 'data' && decl.value[2].find(dcon => dcon.value[0].equal(name))) :
-        (decl.ctor === ctor && decl.value[0].equal(name)));
+    lookup (name, ctor, annot) {
+      if (ctor === 'ctor') if (typeof annot === 'undefined') return this.indices.reduce((a, decl, tmp) => decl.ctor === 'data' &&
+        (tmp = decl.value[2].find(dcon => dcon.value[0].equal(name))) ?
+          (a = a.concat([{tname: decl.value[0], tcon: decl.value[1], dcon: tmp.value[1]}])) : a, []);
+      else return this.indices.slice().reduce((res, decl, tmp, ar) => decl.ctor === 'data' && decl.value[0].equal(annot.value[0]) &&
+        (tmp = decl.value[2].find(dcon => dcon.value[0].equal(name)).value[1]) && (ar.splice(0), res = { dcon: tmp, tcon: decl.value[1] }), null);
+      let ret = this.indices.find(decl => decl.ctor === ctor && decl.value[0].equal(name));
       if (ret) return ret.value[1]
     }
     lookupAll (name) {
@@ -338,8 +340,9 @@ var R = (() => {
       case 'sig':
       //dup?
       //whnf
-      let value, type = new Value({vstar: []});
-      return check(ctx, term, type).then(() => {
+      let value, type = new Value({vstar: []}), mbType = ctx.lookup(name, 'sig');
+      if (mbType && term.equal(quote(mbType))) return Promise.resolve({type, value: mbType});
+      else return check(ctx, term, type).then(() => {
         ctx.push(new Decl({sig: [name, value = evaluate(term, ctx)]}));
         return {type, value}
       })
@@ -445,7 +448,7 @@ var R = (() => {
     }
   }
 
-  function tcArgTele (ctx, terms, tele) {
+  function tcArgTele (ctx, terms, tele) { // treat telescope bindings as functions?
     let seq = Promise.resolve(), ritems = tele.items.slice(), eterms = [];
     for (let i = 0; ritems.length > 0; i++) seq = seq.then(() => {
       switch (ritems[0].ctor) {
@@ -457,24 +460,24 @@ var R = (() => {
         case 'term': // runtime/erasure must match
         return check(ctx, terms[i], ritems[0].value[1])
           .then(() => ritems = doSubst(ctx, ritems.shift().value[0], terms[i], ritems))
-          .then(() => eterms.push())
+          .then(() => eterms.push(terms[i]))
       }
     })
     return seq.then(() => eterms)
   }
 
-  function doSubst (ctx, name, term, items) {
-    return items.map(item => {
+  function doSubst (ctx, nameTerms, tele) {
+    return tele.items.map(item => {
       switch (item.ctor) {
         case 'constraint':
-        let sitem = item.map(x => sub(name, term, x));
+        let sitem = item.map(x => nameTerms.reduce((acc, [name, term]) => sub(name, term, acc), x));
         constraintToDecls(ctx, ...sitem.value)
           .forEach(decl => ctx = ctx.cons(decl, false))
         return new Item({constraint: sitem})
 
         case 'erased':
         case 'term':
-        return new Item({[item.ctor]: [item.value[0], whnf(ctx, sub(name, term, item.value[1]))]})
+        return new Item({[item.ctor]: [item.value[0], whnf(ctx, nameTerms.reduce((acc, [name, term]) => sub(name, term, acc), item.value[1]))]})
       }
     })
   }
@@ -504,6 +507,15 @@ var R = (() => {
 
       case 'freevar': return name === term2.value[0] ? term1 : term2
     }
+  }
+
+  function substTele (ctx, tele1, terms, tele2) {
+    return doSubst(ctx, tele1.items.map((item, i) => {
+      switch (item.ctor) {
+        case 'term': return [item.value[0], terms[i]];
+        default: throw new Error('Internal error: substTele given illegal arguments')
+      }
+    }), tele2)
   }
 
   function infer (ctx, term, index = 0) {
@@ -546,14 +558,23 @@ var R = (() => {
         else throw new Error(`Unknown identifier: ${term.value[0].value[0]}`);
 
         case 'tcon':
-        result = ctx.lookup(term.value[0], 'data')
-        if (result.length !== term.value.length - 1)
-          throw new Error(`Data constructor given wrong number of arguments (${term.value.length - 1} instead of ${result.length})`);
-        return tcArgTele(ctx, term.value.slice(1), result)
+        if (term.value.length === 1) term.value.push([]);
+        result = ctx.lookup(term.value[0], 'data');
+        if (result.length !== term.value[1].length)
+          throw new Error(`Data constructor given wrong number of arguments (${term.value[1].length} instead of ${result.length})`);
+        return tcArgTele(ctx, term.value[1], result)
           .then(() => new Value({vstar: []}))
 
         case 'dcon':
-        throw new Error('unimplemented');
+        if (typeof term.value[2] !== 'undefined') return check(ctx, term, term.value[2], index);
+        if (term.value.length === 1) term.value.push([]);
+        let matches = ctx.lookup(term.value[0], 'ctor'), match = matches[0];
+        if (matches.length !== 1) throw new Error('Ambiguous data constructor');
+        if (match.tcon.length !== 0) throw new Error('Cannot infer data constructor parameters. Try adding an annotation.');
+        if (term.value[1].length !== match.tcon.length) throw new Error(
+          `Constructor should have ${match.tcon.length} arguments, but was given ${term.value[1].length}`);
+        return tcArgTele(ctx, term.value[1], match.dcon)
+          .then(res => new Value({dcon: [ term.value[0], res, new Value({tcon: [ match.tname ]}) ]}))
 
         case 'lam': throw new Error('Cannot infer type of lambda')
       }
@@ -569,6 +590,16 @@ var R = (() => {
           ctx.cons(new Decl({sig: [ new Name({local: [index]}), type.value[0] ]}), true),
           subst(new Term({freevar: [ new Name({local: [index]}) ]}), term.value[0]),
           type.value[1](vfree(new Name({local: [index]}))), index + 1)
+
+        case 'dcon':
+        if (typeof term.value[2] !== 'undefined') if (!term.value[2].equal(type)) throw new Error('Type mismatch');
+        if (term.value.length === 1) term.value.push([]);
+        let match = ctx.lookup(term.value[0], 'ctor', type.value[0]);
+        if (match.dcon.length !== term.value[1].length)
+          throw new Error(`Data constructor given wrong number of arguments (${match.dcon.length} instead of ${term.value[1].length})`);
+        let items = substTele(ctx, match.tcon, term.value[1], match.dcon);
+        return tcArgTele(ctx, term.value[1], new Tele(...items))
+          .then(eterms => new Term({dcon: [term.value[0], eterms, type]}))
 
         default: return infer(ctx, term, index)
           .then(res => {
@@ -696,8 +727,7 @@ var R = (() => {
           seqSync: fn => count.synced() ? fn() : seqAsync(fn),
           seqAsync: fn => count.next(p = fn ? p.then(fn) : p)
         }))(Promise.resolve(), ((a, s) => ({synced: () => s === a, next: p => (s++, p.then(() => a++))}))(0, 0));
-  Object.defineProperty(self, 'ready', { get () { return seqAsync() } });
-
+  Object.defineProperty(self, 'ready', { get () { return seqAsync().then(() => new Promise(r => setTimeout(r, 0))) } });
   return self
 
 })();
@@ -728,27 +758,39 @@ var Unit = new R.Data({ typeName: 'Unit', valueOf: () => null }, [
   { ctorName: 'tt', toString: () => '()' }
 ]);
 
-let idU, tt;
+var Bool = new R.Data({ typeName: 'Bool' }, [
+  { ctorName: 'T', toString: () => 'T', valueOf: () => true },
+  { ctorName: 'F', toString: () => 'F', valueOf: () => false }
+]);
+
+let idU, tt, idtt, idB, idt, idf;
 console.log(Unit().tt());
 console.log(id.type && R.quote(id.type), id.state)
 R.ready.then(() => {
   console.log(Unit().tt())
   console.log(id.type && R.quote(id.type), id.state)
   idU = id(Unit());
-  // tt = id(Unit(), Unit().tt())
+  tt = id(Unit(), Unit().tt());
   console.log(idU.type && R.quote(idU.type), idU.state)
   return R.ready
-    .then(() => new Promise(r => setTimeout(r, 0))) // TODO: eliminate this requirement
 }).then(() => {
   console.log(idU.type && R.quote(idU.type), idU.state)
-//   // console.log(tt)
-//   console.log(idU(Unit().tt()))
+  console.log(tt.type && R.quote(tt.type), tt.state);
+  idtt = idU(Unit().tt());
+  return R.ready
+}).then(() => {
+  console.log(idtt.type && R.quote(idtt.type), idtt.state);
+  idB = id(Bool());
+  idf = id(Bool(), Bool().f())
+  return R.ready
+}).then(() => {
+  idt = idB(Bool().t());
+  // R.context.idB = id(Bool()) ??
 })
 
-// var Bool = new R.Data({ typeName: 'Bool' }, [
-//   { ctorName: 'T', toString: () => 'T', valueOf: () => true },
-//   { ctorName: 'F', toString: () => 'F', valueOf: () => false }
-// ]);
+//
+// // Pattern matching
+// R.Sig('not')
 //
 // var Nat = new R.Data({ typeName: 'Nat' }, [
 //   { ctorName: 'Z', toString: () => 'Z', valueOf: () => 0 },
@@ -778,7 +820,7 @@ R.ready.then(() => {
 //       new R.Item({erased: [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}) ]}),
 //       new R.Item({term: [ new R.Term({tcon: [
 //         new R.Name({global: ['List']}),
-//         new R.Term({freevar: [ new R.Name({global: ['A']}) ]})
+//         [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}) ]
 //       ]}) ]})
 //       // '{A}(List A)'
 //     ],
@@ -819,14 +861,14 @@ R.ready.then(() => {
 //       new R.Item({term: [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}) ]}),
 //       new R.Item({term: [ new R.Term({tcon: [
 //         new R.Name({global: ['Vec']}),
-//         new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
-//         new R.Term({freevar: [ new R.Name({global: ['m']}) ]})
+//         [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
+//           new R.Term({freevar: [ new R.Name({global: ['m']}) ]}) ]
 //       ]}) ]}),
 //       new R.Item({constraint: [
 //         new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
 //         new R.Term({app: [ new R.Term({dcon: [
 //           new R.Name({global: ['S']}),
-//           new R.Term({freevar: [ new R.Name({global: ['m']}) ]})
+//           [ new R.Term({freevar: [ new R.Name({global: ['m']}) ]}) ]
 //         ]}) ]})
 //       ]})
 //       // '{m:Nat}(A)(Vec A m){n=S m}'
@@ -858,7 +900,7 @@ R.ready.then(() => {
 //         new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
 //         new R.Term({dcon: [
 //           new R.Name({global: ['S']}),
-//           new R.Term({freevar: [ new R.Name({global: ['m']}) ]})
+//           [ new R.Term({freevar: [ new R.Name({global: ['m']}) ]}) ]
 //         ]})
 //       ]})
 //       // '{m:Nat}{n=S m}'
@@ -874,12 +916,12 @@ R.ready.then(() => {
 //         new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
 //         new R.Term({dcon: [
 //           new R.Name({global: ['S']}),
-//           new R.Term({freevar: [ new R.Name({global: ['m']}) ]})
+//           [ new R.Term({freevar: [ new R.Name({global: ['m']}) ]}) ]
 //         ]})
 //       ]}),
 //       new R.Item({term: [ new R.Term({tcon: [
 //         new R.Name({global: ['Fin']}),
-//         new R.Term({freevar: [ new R.Name({global: ['m']}) ]})
+//         [ new R.Term({freevar: [ new R.Name({global: ['m']}) ]}) ]
 //       ]}) ]})
 //       // '{m:Nat}{n=S m}(Fin m)'
 //     ],
@@ -893,4 +935,36 @@ R.ready.then(() => {
 // //   { ctorName: 'Succ', ctorSig: '{m:Nat}{n=S m}(Fin m)',
 // //     toString: () => `Succ [${this.value[1].valueOf() - 1}] ` + this.value[1].toString(),
 // //     valueOf: () => this.value[1].valueOf() - 1 }
+// // ])
+//
+// var Sigma = new Data({ typeName: 'Σ', typeSig: [
+//     new R.Item({term: [
+//       new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
+//       new R.Term({star: []})
+//     ]}),
+//     new R.Item({term: [
+//       new R.Term({freevar: [ new R.Name({global: ['B']})]}),
+//       new R.Term({pi: [
+//         new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
+//         new R.Term({star: []})
+//       ]})
+//     ]})
+//   ] }, [
+//   { ctorName: 'DProd', ctorSig: [
+//       new R.Item({term: [
+//         new R.Term({freevar: [ new R.Name({global: ['x']}) ]}),
+//         new R.Term({freevar: [ new R.Name({global: ['A']}) ]})
+//       ]}),
+//       new R.Item({term: [ new R.Term({app: [
+//         new R.Term({freevar: [ new R.Name({global: ['B']}) ]}),
+//         new R.Term({freevar: [ new R.Name({global: ['x']}) ]})
+//       ]}) ]})
+//     ],
+//     toString: () => `Σ[${this.value[0].toString()}, ${this.value[1](this.value[0]).toString()}]`,
+//     valueOf: () => [this.value[0].valueOf(), this.value[1](this.value[0]).valueOf()] }
+// ])
+// // var Sigma = new Data({ typeName: 'Σ', typeSig: '(A:Type)(B:A->Type)' }, [
+// //   { ctorName: 'DProd', ctorSig: '(x:A)(B x)',
+// //     toString: () => `Σ[${this.value[0].toString()}, ${this.value[1](this.value[0]).toString()}]`,
+// //     valueOf: () => [this.value[0].valueOf(), this.value[1](this.value[0]).valueOf()] }
 // // ])
