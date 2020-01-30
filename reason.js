@@ -29,8 +29,7 @@ var R = (() => {
             ctors.map(({ctorName, ctorSig = [], ...dbuiltins}) => {
               // Enforce capitalised constructor names?
               let ctorNameLower = ctorName.charAt(0).toLowerCase() + ctorName.slice(1);
-              ctorsObj[ctorNameLower] = (...ctorParams) => new ({ [ctorName]: class extends klass {
-                sig = new Tele(...ctorSig)
+              ctorsObj[ctorNameLower] = (...ctorParams) => new ({ [ctorName]: class extends klass({sig: new Tele(...ctorSig)}) {
                 ctor = ctorName
                 constructor () {
                   super(...ctorParams);
@@ -44,18 +43,18 @@ var R = (() => {
             })
           ]}),
           self = Object.assign((...args) => {
-            seqSync(() => setProxy(new klass(...args), Reflect));
+            seqSync(() => setProxy(new (klass({sig: new Tele(...typeSig)}))(...args), Reflect));
             return proxy
           }, { state: 'unchecked', ctor: typeName });
       seqAsync(() => typecheck(data)
         .then(() => ctorsObj.state = 'checked') // type?
         .catch(error => Object.assign(ctorsObj, {state: 'failed', error}))
-        .then(() => klass = ({ [typeName]: class {
-          sig = new Tele(...typeSig)
+        .then(() => klass = ({sig}) => ({ [typeName]: class {
+          sig = sig
           ctor = typeName
           constructor (...typeParams) {
-            if (typeParams.length !== this.sig.length)
-              throw new Error(`Wrong number of arguments provided (${typeParams.length} rather than ${this.sig.length})`)
+            if (typeParams.length !== sig.length)
+              throw new Error(`Wrong number of arguments provided (${typeParams.length} rather than ${sig.length})`)
             if (ctorsObj.state = 'checked') Object.assign(this, ctorsObj);
             else if (ctorsObj.state = 'failed') throw ctorsObj.error;
             Object.assign(this, {value: typeParams, term: new Term({tcon: [
@@ -87,7 +86,7 @@ var R = (() => {
               let wildCard = context.fresh(), child = new Sig(wildCard);
               seqAsync(() => typecheck(new Decl({def: [ new Name({global: [ wildCard ]}),
                 child.term = args.reduce((a, x) => new Term({app: [ a, x.term ]}), self.term)
-              ]})).then(res => { child.Sig(quote(res.type)).Def(quote(res.value)) })) // This is why R.ready uses setTimeout
+              ]})).then(res => { child.Sig(quote(res.type)).Def(quote(res.value)) }));
               return child
             } };
             seqAsync(() => typecheck(new Decl({def: [ new Name({global: [string]}), expr ]}))
@@ -122,6 +121,7 @@ var R = (() => {
     mode = 'term'
     globals = 0 // Is there any utility to keeping track of local/global context?
     fresh = (i => () => i++)(0)
+    constructor (obj) { if (obj) Object.assign(this, obj) }
     cons (decl, g) { // TODO: extendLocal
       let ret = new Context(this);
       (ret.indices = this.indices.slice()).push(decl);
@@ -137,9 +137,9 @@ var R = (() => {
     concatTele (tele) {
       let ret = new Context(this);
       for (let i of tele.items) switch (i.ctor) {
-        case 'term': ret = ret.cons(new Decl({sig: i.value}), false);
+        case 'term': ret = ret.cons(new Decl({sig: [i.value[0].value[0], i.value[1]]}), false);
         break;
-        case 'constraint': ret = ret.cons(new Decl({def: [i.value[0].value[0], i.value[1]]}), false)
+        case 'constraint': ret = ret.cons(new Decl({def: i.value}), false)
       }
       return ret
     }
@@ -152,7 +152,7 @@ var R = (() => {
           (a = a.concat([{tname: decl.value[0], tcon: decl.value[1], dcon: tmp.value[1]}])) : a, []);
       else return this.indices.slice().reduce((res, decl, tmp, ar) => decl.ctor === 'data' && decl.value[0].equal(annot.value[0]) &&
         (tmp = decl.value[2].find(dcon => dcon.value[0].equal(name)).value[1]) && (ar.splice(0), res = { dcon: tmp, tcon: decl.value[1] }), null);
-      let ret = this.indices.find(decl => decl.ctor === ctor && decl.value[0].equal(name));
+      let ret = this.indices.find(decl => (decl.ctor === ctor || (ctor === 'data' && decl.ctor === 'datasig')) && decl.value[0].equal(name));
       if (ret) return ret.value[1]
     }
     lookupAll (name) {
@@ -217,6 +217,7 @@ var R = (() => {
       this.items.push(item);
       this.length++
     }
+    erased (item) { this.items.push(item) }
     constraint (item) { this.items.push(item) }
   }
 
@@ -275,7 +276,7 @@ var R = (() => {
     }
   }
 
-  function tcTele (ctx, tele) { // Doesn't affect tele
+  function tcTele (ctx, tele) {
     return Promise.all(tele.items.map(item => {
       switch (item.ctor) {
         case 'constraint':
@@ -283,18 +284,17 @@ var R = (() => {
           .then(type => check(ctx, item.value[1], type))
           .then(type => constraintToDecls(ctx, ...item.value))
           .then(decls => decls.forEach(decl => ctx = ctx.cons(decl, false)))
+          .then(() => item)
 
         case 'term':
         case 'erased':
-        return item.value.length === 2 ?
-          check(ctx, ...item.value).then(() =>
-            ctx = ctx.cons(new Decl({sig: item.value}), false)) :
-          item.value.length === 1 ? check(ctx, item.value[0], new Term({star: []})).then(() =>
-            // wildcard names are numbers
-            ctx = ctx.cons(new Decl({sig: [new Name({global: [ctx.fresh()]}), item.value[0]]}), false)) :
-          Promise.reject('Invalid signature')
+        let [name, type] = item.value.length === 2 ? item.value :
+          [ new Term({freevar: [ new Name({global: [ctx.fresh()]}) ]}), item.value[0] ];
+        return check(ctx, type, new Value({vstar: []}))
+          .then(() => ctx = ctx.cons(new Decl({sig: [name.value[0], type = evaluate(type, ctx)]}), false))
+          .then(() => new Item({term: [name, type]}))
       }
-    })).then(() => tele)
+    })).then(tl => new Tele(...tl))
   }
 
   function constraintToDecls (ctx, term1, term2) {
@@ -341,21 +341,23 @@ var R = (() => {
   }
 
   function tcArgTele (ctx, terms, tele) { // treat telescope bindings as functions?
-    let seq = Promise.resolve(), ritems = tele.items.slice(), eterms = [];
-    for (let i = 0; ritems.length > 0; i++) seq = seq.then(() => {
-      switch (ritems[0].ctor) {
-        case 'constraint': // equate(...item.value)
-        ritems.shift();
-        return
+    let rtele = new Tele(...tele.items), eterms = [],
+        loop = i => {
+          if (rtele.items.length === 0) return Promise.resolve();
+          switch (rtele.items[0].ctor) {
+            case 'constraint':
+            if (!item.value[0].equal(item.value[1])) throw new Error(`Expected ${item.value[1]} but found ${item.value[0]}`)
+            rtele.items.shift();
+            return loop(i + 1)
 
-        case 'erased':
-        case 'term': // runtime/erasure must match
-        return check(ctx, terms[i], ritems[0].value[1])
-          .then(() => ritems = doSubst(ctx, ritems.shift().value[0], terms[i], ritems))
-          .then(() => eterms.push(terms[i]))
-      }
-    })
-    return seq.then(() => eterms)
+            case 'erased':
+            case 'term': // runtime/erasure must match
+            return check(ctx, terms[i], rtele.items[0].value[1])
+              .then(() => ritems = new Tele(...doSubst(ctx, [[rtele.items.shift().value[0], terms[i]]], rtele)))
+              .then(() => eterms.push(terms[i])).then(() => loop(i + 1))
+          }
+        }
+    return loop(0).then(() => eterms)
   }
 
   function doSubst (ctx, nameTerms, tele) {
@@ -613,6 +615,8 @@ var R = (() => {
     }
   }
 
+  // API
+
   const context = new Context(),
         self = { Context, context, Data, Sig, Term, Name, Decl, Item, typecheck, evaluate, quote },
         { seqSync, seqAsync } = ((p, count) => ({
@@ -642,6 +646,8 @@ var id = new R.Sig('id',
     ]})
   ]})
 );
+// var id = new R.Sig('id:=(t,x=>x):(T:Type)->T->T')
+// var id = new R.Sig('id:=(x=>x):[T:Type]->T->T')
 
 
 var Void = new R.Data({ typeName: 'Void', valueOf: () => undefined });
@@ -670,61 +676,67 @@ var Nat = new R.Data({ typeName: 'Nat' }, [
 //     valueOf () { return this.value[0].valueOf() + 1 } }
 // ]);
 
-let idU, tt, idtt, idB, idt, idf, zero, one, two;
+var List = new R.Data({ typeName: 'List', typeSig: [
+    new R.Item({term: [
+      new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
+      new R.Term({star: []})
+    ]})
+  ] }, [
+  { ctorName: 'Nil', toString: () => '[]', valueOf: () => [] },
+  { ctorName: 'Cons', ctorSig: [
+      new R.Item({term: [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}) ]}),
+      new R.Item({term: [ new R.Term({tcon: [
+        new R.Name({global: ['List']}),
+        [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}) ]
+      ]}) ]})
+    ],
+    toString () { return this.value[1].toString() + ' : ' + this.value[0].toString() },
+    valueOf () { return this.value[1].valueOf().concat([this.value[0].valueOf()]) } }
+]);
+// var List = new R.Data({ typeName: 'List', typeSig: '(A:Type)' }, [
+//   { ctorName: 'Nil', toString: () => '[]', valueOf: () => [] },
+//   { ctorName: 'Cons', ctorSig: '(A)(List A)',
+//     toString () { return this.value[0].toString() + ' : ' + this.value[1].toString() },
+//     valueOf () { return this.value[1].concat([this.value[0]]) } }
+// ]);
+
+let idU, tt, idtt, idB, idt, idf, zero, one, two, Nats, _21;
 console.log(Unit().tt());
 console.log(id.type && R.quote(id.type), id.state)
-R.ready.then(() => {
+R.ready.then(async () => {
   console.log(Unit().tt())
   console.log(id.type && R.quote(id.type), id.state)
   idU = id(Unit());
   tt = id(Unit(), Unit().tt());
   console.log(idU.type && R.quote(idU.type), idU.state)
-  return R.ready
-}).then(() => {
+  await R.ready;
+
   console.log(idU.type && R.quote(idU.type), idU.state)
   console.log(tt.type && R.quote(tt.type), tt.state);
   idtt = idU(Unit().tt());
-  return R.ready
-}).then(() => {
+  await R.ready;
+
   console.log(idtt.type && R.quote(idtt.type), idtt.state);
   idB = id(Bool());
-  idf = id(Bool(), Bool().f())
-  return R.ready
-}).then(() => {
+  idf = id(Bool(), Bool().f());
+  Nat();
+  await R.ready;
+
   idt = idB(Bool().t());
   // R.context.idB = id(Bool()) ??
   zero = Nat().z();
   one = Nat().s(zero);
-  two = Nat().s(one)
+  two = Nat().s(one);
+  Nats = List(Nat());
+  await R.ready;
+
+  _21 = Nats.cons(one, Nats.cons(two, Nats.nil()));
+  console.log(_21.toString(), _21.valueOf())
 })
 
 //
 // // Pattern matching
 // R.Sig('not')
-//
-// var List = new R.Data({ typeName: 'List', typeSig: [
-//     new R.Item({term: [
-//       new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
-//       new R.Term({star: []})
-//     ]})
-//   ] }, [
-//   { ctorName: 'Nil', toString: () => '[]', valueOf: () => [] },
-//   { ctorName: 'Cons', ctorSig: [
-//       new R.Item({erased: [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}) ]}),
-//       new R.Item({term: [ new R.Term({tcon: [
-//         new R.Name({global: ['List']}),
-//         [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}) ]
-//       ]}) ]})
-//     ],
-//     toString () { return this.value[0].toString() + ' : ' + this.value[1].toString() },
-//     valueOf () { return this.value[1].concat([this.value[0]]) } }
-// ]);
-// // var List = new R.Data({ typeName: 'List', typeSig: '(A:Type)' }, [
-// //   { ctorName: 'Nil', toString: () => '[]', valueOf: () => [] },
-// //   { ctorName: 'Cons', ctorSig: '{A}(List A)',
-// //     toString () { return this.value[0].toString() + ' : ' + this.value[1].toString() },
-// //     valueOf () { return this.value[1].concat([this.value[0]]) } }
-// // ]);
 //
 // var Vec = new R.Data({ typeName: 'Vec', typeSig: [
 //     new R.Item({term: [
@@ -792,8 +804,8 @@ R.ready.then(() => {
 //         ]})
 //       ]})
 //     ],
-//     toString: () => `Zero [${this.value[0].toString()}]`,
-//     valueOf: () => this.value[0].valueOf() - 1 },
+//     toString () { return`Zero [${this.value[0].toString()}]` },
+//     valueOf () { return this.value[0].valueOf() - 1 } },
 //   { ctorName: 'Succ', ctorSig: [
 //       new R.Item({erased: [
 //         new R.Term({freevar: [ new R.Name({global: ['m']}) ]}),
@@ -811,16 +823,16 @@ R.ready.then(() => {
 //         [ new R.Term({freevar: [ new R.Name({global: ['m']}) ]}) ]
 //       ]}) ]})
 //     ],
-//     toString: () => `Succ [${this.value[1].valueOf() - 1}] ` + this.value[1].toString(),
-//     valueOf: () => this.value[1].valueOf() - 1 }
+//     toString () { return `Succ [${this.value[1].valueOf() - 1}] ` + this.value[1].toString() },
+//     valueOf () { return this.value[1].valueOf() - 1 } }
 // ])
 // // var Fin = new R.Data({ typeName: 'Fin', typeSig: '(n:Nat)' }, [
 // //   { ctorName: 'Zero', ctorSig: '{m:Nat}{n=S m}',
-// //     toString: () => `Zero [${this.value[0].toString()}]`,
-// //     valueOf: () => this.value[0].valueOf() - 1 },
+// //     toString () { return `Zero [${this.value[0].toString()}]` },
+// //     valueOf () { return this.value[0].valueOf() - 1 } },
 // //   { ctorName: 'Succ', ctorSig: '{m:Nat}{n=S m}(Fin m)',
-// //     toString: () => `Succ [${this.value[1].valueOf() - 1}] ` + this.value[1].toString(),
-// //     valueOf: () => this.value[1].valueOf() - 1 }
+// //     toString () { return `Succ [${this.value[1].valueOf() - 1}] ` + this.value[1].toString() },
+// //     valueOf () { return this.value[1].valueOf() - 1 } }
 // // ])
 //
 // var Sigma = new Data({ typeName: 'Σ', typeSig: [
@@ -846,11 +858,11 @@ R.ready.then(() => {
 //         new R.Term({freevar: [ new R.Name({global: ['x']}) ]})
 //       ]}) ]})
 //     ],
-//     toString: () => `Σ[${this.value[0].toString()}, ${this.value[1](this.value[0]).toString()}]`,
-//     valueOf: () => [this.value[0].valueOf(), this.value[1](this.value[0]).valueOf()] }
+//     toString () { return `Σ[${this.value[0].toString()}, ${this.value[1](this.value[0]).toString()}]` },
+//     valueOf () { return [this.value[0].valueOf(), this.value[1](this.value[0]).valueOf()] } }
 // ])
 // // var Sigma = new Data({ typeName: 'Σ', typeSig: '(A:Type)(B:A->Type)' }, [
 // //   { ctorName: 'DProd', ctorSig: '(x:A)(B x)',
-// //     toString: () => `Σ[${this.value[0].toString()}, ${this.value[1](this.value[0]).toString()}]`,
-// //     valueOf: () => [this.value[0].valueOf(), this.value[1](this.value[0]).valueOf()] }
+// //     toString () { return `Σ[${this.value[0].toString()}, ${this.value[1](this.value[0]).toString()}]` },
+// //     valueOf () { return [this.value[0].valueOf(), this.value[1](this.value[0]).valueOf()] } }
 // // ])
