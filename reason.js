@@ -11,7 +11,7 @@ var R = (() => {
       setProxy (t, h) { [target, handler] = [t || target, h || handler] }
     }
   } };
-  class Data extends Readyable {
+  class Data extends Readyable { // TODO: obj.sig is weird, needs fixing
     constructor ({ typeName, typeSig = [], ...tbuiltins }, ctors = []) {
       let { proxy, setProxy } = super(class {}, { get (_, prop) {
         let error = `Typechecking not yet completed for '${typeName}' (while calling '${prop}')`;
@@ -50,7 +50,6 @@ var R = (() => {
         .then(() => ctorsObj.state = 'checked') // type?
         .catch(error => Object.assign(ctorsObj, {state: 'failed', error}))
         .then(() => klass = ({sig}) => ({ [typeName]: class {
-          sig = sig
           ctor = typeName
           constructor (...typeParams) {
             if (typeParams.length !== sig.length)
@@ -147,8 +146,8 @@ var R = (() => {
       return this.indices[this.indices.length - i - 1].value[1]
     }
     lookup (name, ctor, annot) {
-      if (ctor === 'ctor') if (typeof annot === 'undefined') return this.indices.reduce((a, decl, tmp) => decl.ctor === 'data' &&
-        (tmp = decl.value[2].find(dcon => dcon.value[0].equal(name))) ?
+      if (ctor === 'ctor') if (typeof annot === 'undefined') return this.indices.reduce((a, decl, tmp) =>
+        decl.ctor === 'data' && (tmp = decl.value[2].find(dcon => dcon.value[0].equal(name))) ?
           (a = a.concat([{tname: decl.value[0], tcon: decl.value[1], dcon: tmp.value[1]}])) : a, []);
       else return this.indices.slice().reduce((res, decl, tmp, ar) => decl.ctor === 'data' && decl.value[0].equal(annot.value[0]) &&
         (tmp = decl.value[2].find(dcon => dcon.value[0].equal(name)).value[1]) && (ar.splice(0), res = { dcon: tmp, tcon: decl.value[1] }), null);
@@ -178,7 +177,9 @@ var R = (() => {
   class Term extends AST('ann', 'star', 'pi', 'lam', 'app', 'boundvar', 'freevar' ,'tcon', 'dcon') {
     equal (operand) {
       return this.ctor === operand.ctor &&
-        this.value.every((x, i) => x === operand.value[i] || x.equal(operand.value[i]))
+        this.value.every((x, i) => x === operand.value[i] ||
+          ('equal' in x && x.equal(operand.value[i])) ||
+          x.every((y, j) => y === operand.value[i][j]))
     }
     toString () {
       switch (this.ctor) {
@@ -261,10 +262,10 @@ var R = (() => {
       case 'data':
       // dup?
       return tcTele(ctx, term).then(tele =>
-        Promise.all(ctors.map(ctor =>
+        ctors.reduce((p, ctor) => p = p.then(acc =>
           tcTele(ctx.cons(new Decl({datasig: [name, tele]})).concatTele(tele), ctor.value[1])
-            .then(ctele => new Ctor({ctor: [ctor.value[0], ctele]}))
-        )).then(ctors => {
+            .then(ctele => acc.concat([new Ctor({ctor: [ctor.value[0], ctele]})]))
+        ), Promise.resolve([])).then(ctors => {
           let decl = new Decl({data: [name, tele, ctors]});
           ctx.push(decl);
           return decl
@@ -277,14 +278,17 @@ var R = (() => {
   }
 
   function tcTele (ctx, tele) {
-    return Promise.all(tele.items.map(item => {
+    return tele.items.reduce((p, item) => p = p.then(acc => {
       switch (item.ctor) {
         case 'constraint':
         return infer(ctx, item.value[0])
           .then(type => check(ctx, item.value[1], type))
-          .then(type => constraintToDecls(ctx, ...item.value))
+          .then(value => {
+            item.value[1] = value;
+            return constraintToDecls(ctx, ...item.value)
+          })
           .then(decls => decls.forEach(decl => ctx = ctx.cons(decl, false)))
-          .then(() => item)
+          .then(() => acc.concat([item]))
 
         case 'term':
         case 'erased':
@@ -292,14 +296,13 @@ var R = (() => {
           [ new Term({freevar: [ new Name({global: [ctx.fresh()]}) ]}), item.value[0] ];
         return check(ctx, type, new Value({vstar: []}))
           .then(() => ctx = ctx.cons(new Decl({sig: [name.value[0], type = evaluate(type, ctx)]}), false))
-          .then(() => new Item({term: [name, type]}))
+          .then(() => acc.concat([new Item({term: [name, type]})]))
       }
-    })).then(tl => new Tele(...tl))
+    }), Promise.resolve([])).then(items => new Tele(...items))
   }
 
   function constraintToDecls (ctx, term1, term2) {
-    let lhnf = whnf(term1), rhnf = whnf(term2), decls = [];
-    console.log(lhnf, rhnf)
+    let lhnf = whnf(ctx, term1), rhnf = whnf(ctx, term2), decls = [];
     if (lhnf.equal(rhnf)) return decls;
     else {
       if (lhnf.ctor === 'app' && rhnf.ctor === 'app') {
@@ -352,9 +355,11 @@ var R = (() => {
 
             case 'erased':
             case 'term': // runtime/erasure must match
-            return check(ctx, terms[i], rtele.items[0].value[1])
-              .then(() => ritems = new Tele(...doSubst(ctx, [[rtele.items.shift().value[0], terms[i]]], rtele)))
-              .then(() => eterms.push(terms[i])).then(() => loop(i + 1))
+            return check(ctx, terms[i], rtele.items[0].value[1]).then(() => {
+              rtele = new Tele(...doSubst(ctx, [[rtele.items.shift().value[0].value[0], terms[i]]], rtele));
+              eterms.push(terms[i])
+              return loop(i + 1)
+            })
           }
         }
     return loop(0).then(() => eterms)
@@ -371,7 +376,8 @@ var R = (() => {
 
         case 'erased':
         case 'term':
-        return new Item({[item.ctor]: [item.value[0], whnf(ctx, nameTerms.reduce((acc, [name, term]) => sub(name, term, acc), item.value[1]))]})
+        let type = nameTerms.reduce((acc, [name, term]) => sub(name, term, acc), quote(item.value[1]));
+        return new Item({[item.ctor]: [item.value[0], evaluate(whnf(ctx, type), ctx)]})
       }
     })
   }
@@ -397,6 +403,9 @@ var R = (() => {
         sub(name, term1, term2.value[1])
       ]});
 
+      case 'tcon':
+      case 'dcon':
+
       case 'boundvar': return term2;
 
       case 'freevar': return name === term2.value[0] ? term1 : term2
@@ -406,7 +415,7 @@ var R = (() => {
   function substTele (ctx, tele1, terms, tele2) {
     return doSubst(ctx, tele1.items.map((item, i) => {
       switch (item.ctor) {
-        case 'term': return [item.value[0], terms[i]];
+        case 'term': return [item.value[0].value[0], terms[i]];
         default: throw new Error('Internal error: substTele given illegal arguments')
       }
     }), tele2)
@@ -465,10 +474,11 @@ var R = (() => {
         let matches = ctx.lookup(term.value[0], 'ctor'), match = matches[0];
         if (matches.length !== 1) throw new Error('Ambiguous data constructor');
         if (match.tcon.length !== 0) throw new Error('Cannot infer data constructor parameters. Try adding an annotation.');
-        if (term.value[1].length !== match.tcon.length) throw new Error(
-          `Constructor should have ${match.tcon.length} arguments, but was given ${term.value[1].length}`);
+        if (term.value[1].length !== match.dcon.length) throw new Error(
+          `Constructor should have ${match.dcon.length} arguments, but was given ${term.value[1].length}`);
         return tcArgTele(ctx, term.value[1], match.dcon)
-          .then(res => new Value({dcon: [ term.value[0], res, new Value({tcon: [ match.tname ]}) ]}))
+          .then(res => new Value({dcon: [
+            term.value[0], res, new Value({vneutral: [ new Neutral({ntcon: [ match.tname ]}) ]}) ]}))
 
         case 'lam': throw new Error('Cannot infer type of lambda')
       }
@@ -700,90 +710,101 @@ var List = new R.Data({ typeName: 'List', typeSig: [
 //     valueOf () { return this.value[1].concat([this.value[0]]) } }
 // ]);
 
-let idU, tt, idtt, idB, idt, idf, zero, one, two, Nats, _21;
-console.log(Unit().tt());
-console.log(id.type && R.quote(id.type), id.state)
+var Vec = new R.Data({ typeName: 'Vec', typeSig: [
+  // TODO: Vec A should be a type family
+  //'(A:Type):Nat->Type'
+  //'Nil:Vec A Z'
+  //'Cons:{n}(x:A)(xs:Vec n A)==>Vec A (S Z)'
+    new R.Item({term: [
+      new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
+      new R.Term({star: []})
+    ]}),
+    new R.Item({term: [
+      new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
+      new R.Term({tcon: [ new R.Name({global: ['Nat']}) ]})
+    ]})
+  ] }, [
+  { ctorName: 'Nil', ctorSig: [
+      new R.Item({constraint: [
+        new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
+        new R.Term({dcon: [ new R.Name({global: ['Z']}) ]})
+      ]})
+    ],
+    toString: () => '<>', valueOf: () => [] },
+  { ctorName: 'Cons', ctorSig: [
+      new R.Item({erased: [
+        new R.Term({freevar: [ new R.Name({global: ['m']}) ]}),
+        new R.Term({tcon: [ new R.Name({global: ['Nat']}) ]})
+      ]}),
+      new R.Item({term: [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}) ]}),
+      new R.Item({term: [ new R.Term({tcon: [
+        new R.Name({global: ['Vec']}),
+        [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
+          new R.Term({freevar: [ new R.Name({global: ['m']}) ]}) ]
+      ]}) ]}),
+      new R.Item({constraint: [
+        new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
+        new R.Term({dcon: [
+          new R.Name({global: ['S']}),
+          [ new R.Term({freevar: [ new R.Name({global: ['m']}) ]}) ]
+        ]})
+      ]})
+    ],
+    toString () { return this.value[1].toString() + ' :: ' + this.value[0].toString() },
+    valueOf () { return this.value[1].valueOf().concat([this.value[0].valueOf()]) } }
+]);
+// var Vec = new R.Data({ typeName: 'Vec', typeSig: '(A:Type)(n:Nat)' }, [
+//   { ctorName: 'Nil', ctorSig: '{n=Z}',
+//     toString: () => '<>', valueOf: () => [] },
+//   { ctorName: 'Cons', ctorSig: '{m:Nat}(A)(Vec A m){n=S m}',
+//     toString () { return this.value[0].toString() + ' :: ' + this.value[1].toString() },
+//     valueOf () { return this.value[1].concat([this.value[0]]) } }
+// ]);
+
+let idU, tt, idtt, idB, idt, idf, zero, one, two, Nats, _21, NatVec, BadVec;
+// console.log(Unit().tt());
+// console.log(id.type && R.quote(id.type), id.state)
 R.ready.then(async () => {
-  console.log(Unit().tt())
-  console.log(id.type && R.quote(id.type), id.state)
-  idU = id(Unit());
-  tt = id(Unit(), Unit().tt());
-  console.log(idU.type && R.quote(idU.type), idU.state)
-  await R.ready;
-
-  console.log(idU.type && R.quote(idU.type), idU.state)
-  console.log(tt.type && R.quote(tt.type), tt.state);
-  idtt = idU(Unit().tt());
-  await R.ready;
-
-  console.log(idtt.type && R.quote(idtt.type), idtt.state);
-  idB = id(Bool());
-  idf = id(Bool(), Bool().f());
+//   console.log(Unit().tt())
+//   console.log(id.type && R.quote(id.type), id.state)
+//   idU = id(Unit());
+//   tt = id(Unit(), Unit().tt());
+//   console.log(idU.type && R.quote(idU.type), idU.state)
+//   await R.ready;
+//
+//   console.log(idU.type && R.quote(idU.type), idU.state)
+//   console.log(tt.type && R.quote(tt.type), tt.state);
+//   idtt = idU(Unit().tt());
+//   await R.ready;
+//
+//   console.log(idtt.type && R.quote(idtt.type), idtt.state);
+//   idB = id(Bool());
+//   idf = id(Bool(), Bool().f());
   Nat();
+  Bool();
+  await R.ready;
+//
+//   idt = idB(Bool().t());
+//   // R.context.idB = id(Bool()) ??
+//   zero = Nat().z();
+//   one = Nat().s(zero);
+//   two = Nat().s(one);
+//   Nats = List(Nat());
+//   await R.ready;
+//
+//   _21 = Nats.cons(one, Nats.cons(two, Nats.nil()));
+//   console.log(_21.toString(), _21.valueOf())
+
+  NatVec = Vec(Nat(), Nat().z());
+  BadVec = Vec(Nat(), Bool().t());
   await R.ready;
 
-  idt = idB(Bool().t());
-  // R.context.idB = id(Bool()) ??
-  zero = Nat().z();
-  one = Nat().s(zero);
-  two = Nat().s(one);
-  Nats = List(Nat());
-  await R.ready;
-
-  _21 = Nats.cons(one, Nats.cons(two, Nats.nil()));
-  console.log(_21.toString(), _21.valueOf())
+  console.log(BadVec.error)
 })
 
 //
 // // Pattern matching
 // R.Sig('not')
-//
-// var Vec = new R.Data({ typeName: 'Vec', typeSig: [
-//     new R.Item({term: [
-//       new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
-//       new R.Term({star: []})
-//     ]}),
-//     new R.Item({term: [
-//       new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
-//       new R.Term({tcon: [ new R.Name({global: ['Nat']}) ]})
-//     ]})
-//   ] }, [
-//   { ctorName: 'Nil', ctorSig: [
-//       new R.Item({constraint: [
-//         new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
-//         new R.Term({dcon: [ new R.Name({global: ['Z']}) ]})
-//       ]})
-//     ],
-//     toString: () => '<>', valueOf: () => [] },
-//   { ctorName: 'Cons', ctorSig: [
-//       new R.Item({erased: [
-//         new R.Term({freevar: [ new R.Name({global: ['m']}) ]}),
-//         new R.Term({tcon: [ new R.Name({global: ['Nat']}) ]})
-//       ]}),
-//       new R.Item({term: [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}) ]}),
-//       new R.Item({term: [ new R.Term({tcon: [
-//         new R.Name({global: ['Vec']}),
-//         [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
-//           new R.Term({freevar: [ new R.Name({global: ['m']}) ]}) ]
-//       ]}) ]}),
-//       new R.Item({constraint: [
-//         new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
-//         new R.Term({app: [ new R.Term({dcon: [
-//           new R.Name({global: ['S']}),
-//           [ new R.Term({freevar: [ new R.Name({global: ['m']}) ]}) ]
-//         ]}) ]})
-//       ]})
-//     ],
-//     toString () { return this.value[0].toString() + ' :: ' + this.value[1].toString() },
-//     valueOf () { return this.value[1].concat([this.value[0]]) } }
-// ]);
-// // var Vec = new R.Data({ typeName: 'Vec', typeSig: '(A:Type)(n:Nat)' }, [
-// //   { ctorName: 'Nil', ctorSig: '{n=Z}',
-// //     toString: () => '<>', valueOf: () => [] },
-// //   { ctorName: 'Cons', ctorSig: '{m:Nat}(A)(Vec A m){n=S m}',
-// //     toString () { return this.value[0].toString() + ' :: ' + this.value[1].toString() },
-// //     valueOf () { return this.value[1].concat([this.value[0]]) } }
-// // ]);
 //
 // var Fin = new R.Data({ typeName: 'Fin', typeSig: [
 //     new R.Item({term: [
