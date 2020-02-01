@@ -191,8 +191,8 @@ var R = (() => {
         case 'boundvar': return `Bound ${this.value[0]}`;
         case 'freevar': return `Free ${this.value[0]}`;
 
-        case 'tcon':
-        case 'dcon': return `<${this.value[0].value[0]} ${this.value.slice(1).map(x => `(${x.toString()})`).join(' ')}>`;
+        case 'tcon': return `<TC:${this.value[0].value[0]} ${this.value.slice(1).map(x => `${x.toString()}`).join(' ')}>`;
+        case 'dcon': return `DC:${this.value[0].value[0]} ${this.value.slice(1).map(x => `(${x.toString()})`).join(' ')}`;
       }
     }
   }
@@ -711,7 +711,7 @@ var List = new R.Data({ typeName: 'List', typeSig: [
 // ]);
 
 var Vec = new R.Data({ typeName: 'Vec', typeSig: [
-  // TODO: Vec A should be a type family
+  // TODO: Vec A should be a type family (a function that returns a data type?)
   //'(A:Type):Nat->Type'
   //'Nil:Vec A Z'
   //'Cons:{n}(x:A)(xs:Vec n A)==>Vec A (S Z)'
@@ -753,6 +753,55 @@ var Vec = new R.Data({ typeName: 'Vec', typeSig: [
     toString () { return this.value[1].toString() + ' :: ' + this.value[0].toString() },
     valueOf () { return this.value[1].valueOf().concat([this.value[0].valueOf()]) } }
 ]);
+
+// var Vec = new R.Data({ typeName: 'Vec', typeSig: [
+//     // '(A:Type):Nat->Type'
+//     new R.Item({term: [
+//       new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
+//       new R.Term({star: []})
+//     ]}),
+//     new R.Item({term: [
+//       new R.Term({pi: [
+//         new R.Term({tcon: [ new R.Name({global: ['Nat']}) ]}),
+//         new R.Term({star: []})
+//       ]})
+//     ]})
+//   ] }, [
+//   { ctorName: 'Nil', ctorSig: [
+//       // 'Vec A Z'
+//       new R.Item({term: [ new R.Term({tcon: [
+//         new R.Name({global: ['Vec']}),
+//         [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
+//           new R.Term({dcon: [ new R.Term({global: ['Z']}) ]}) ]
+//       ]}) ]})
+//     ],
+//     toString: () => '<>', valueOf: () => [] },
+//   { ctorName: 'Cons', ctorSig: [
+//       // '{n}(A)(Vec A n)->(Vec A (S n))'
+//       // ErasedPi?
+//       new R.Item({erased: [
+//         new R.Term({freevar: [ new R.Name({global: ['n']}) ]}),
+//         new R.Term({tcon: [ new R.Name({global: ['Nat']}) ]})
+//       ]}),
+//       new R.Item({term: [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}) ]}),
+//       new R.Item({term: [ new R.Term({tcon: [
+//         new R.Name({global: ['Vec']}),
+//         [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
+//           new R.Term({freevar: [ new R.Name({global: ['n']}) ]}) ]
+//       ]}) ]}),
+//       new R.Item({term: [ new R.Term({tcon: [
+//         new R.Name({global: ['Vec']}),
+//         [ new R.Term({freevar: [ new R.Name({global: ['A']}) ]}),
+//           new R.Term({dcon: [
+//             new R.Name({global: ['S']}),
+//             [ new R.Term({freevar: [ new R.Name({global: ['n']}) ]}) ]
+//           ]}) ]
+//       ]}) ]})
+//     ],
+//     toString () { return this.value[1].toString() + ' :: ' + this.value[0].toString() },
+//     valueOf () { return this.value[1].valueOf().concat([this.value[0].valueOf()]) } }
+// ]);
+
 // var Vec = new R.Data({ typeName: 'Vec', typeSig: '(A:Type)(n:Nat)' }, [
 //   { ctorName: 'Nil', ctorSig: '{n=Z}',
 //     toString: () => '<>', valueOf: () => [] },
@@ -761,7 +810,7 @@ var Vec = new R.Data({ typeName: 'Vec', typeSig: [
 //     valueOf () { return this.value[1].concat([this.value[0]]) } }
 // ]);
 
-let idU, tt, idtt, idB, idt, idf, zero, one, two, Nats, _21, NatVec, BadVec;
+let idU, tt, idtt, idB, idt, idf, zero, one, two, Nats, _21, NatVec, BadVec, _21V;
 // console.log(Unit().tt());
 // console.log(id.type && R.quote(id.type), id.state)
 R.ready.then(async () => {
@@ -795,11 +844,25 @@ R.ready.then(async () => {
 //   _21 = Nats.cons(one, Nats.cons(two, Nats.nil()));
 //   console.log(_21.toString(), _21.valueOf())
 
-  NatVec = Vec(Nat(), Nat().z());
+  // NilNatVec = Vec(Nat(), Nat().z());
+  // ConsNatVec = R.Sig('SVec',
+  //   new R.Term({pi: [
+  //     new R.Term({star: []}),
+  //     new R.Term({star: []})
+  //   ]})
+  // ).Def(
+  //   // requires Pattern!!
+  // )
+  // NatVec = Vec(Nat())
   BadVec = Vec(Nat(), Bool().t());
   await R.ready;
 
-  console.log(BadVec.error)
+  console.log(BadVec.error);
+  _21V =  NatVec.cons(Nat.s(Nat.z()), NatVec.cons(Nat.s(Nat.s(Nat.z())), NatVec.nil()))
+  // let NatVec = Vec(Nat()),
+  //     vecB = NatVec().cons(Nat.z(), NatVec().nil())
+
+
 })
 
 //
