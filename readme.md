@@ -11,29 +11,29 @@ I like the promise of efficiency from using interaction nets as well so I'm also
 ### Target usage
 ```
 // functions, lambdas
-let id1 = R
+let id1 = new R
   .Sig('id', '(T : Type) -> T -> T')
   .Def('t, x => x');
 
 // functions with builtins
-let id2 = R.Def("id'", '(x => x) : {T : Type} -> T -> T',
-  { toString () { return this.value[0].toString() }
+let id2 = new R.Def("id'", '(x => x) : {T : Type} -> T -> T',
+  { toString () { return this.value[0].toString() },
     valueOf () { return this.value[0].valueOf() } }
 );
 
 // types
-let Unit = R.Data(
-  'Unit : Type', ['tt : Unit'],
+let Unit = new R.Data(
+  'Unit', 'Type', ['tt : Unit'],
   { fromJS: () => Unit().tt() }
 );
-let Nat_ = R.Data(
+let Nat_ = new R.Data(
   "Nat' : Type",
   [ 'Z : Nat',
     'S : Nat -> Nat' ]
 )
 
 // types with builtins
-let Nat = R.Data('Nat : Type',
+let Nat = new R.Data('Nat', 'Type',
   [ { 'Z : Nat': { toString: () => 'Z', valueOf: () => 0 } },
     { 'S : Nat -> Nat': {
       toString () { return 'S' + this.value[0].toString() },
@@ -57,18 +57,18 @@ R.ready.then(async () => {
 })
 
 // pattern matching
-let id3 = R
+let id3 = new R
   .Sig("id'' : (T : Type) -> T -> T')
   .Def('@ t x := x');
 
-let plus = R
+let plus = new R
   .Sig('plus', 'Nat -> Nat -> Nat')
   .Def(
     '@ Z n := n',
     '@ (S m) n := S (plus m n)'
   )
 
-let Vec = new R.Data('Vec (A : Type) : Nat -> Type',
+let Vec = new R.Data('Vec', '(A : Type) : Nat -> Type',
   [ { 'Nil : Vec A Z': { toString: () => '<>', valueOf: () => [] } },
     { 'Cons : {n : Nat}(A)(Vec A n) -> Vec A (S n)': {
       toString () { return this.value[0].toString() + ' :: ' + this.value[1].toString() },
@@ -77,7 +77,7 @@ let Vec = new R.Data('Vec (A : Type) : Nat -> Type',
 );
 
 // functions with builtins
-let zipWith = R
+let zipWith = new R
   .Sig('zipWith', '{a b : Type}{n : Nat} -> Vec (a -> b) n -> Vec a n -> Vec b n')
   .Def(
     '@ Nil _ := Nil',
@@ -87,7 +87,7 @@ let zipWith = R
 
 //usage:
 R.ready.then(async () => {
-  let Succs = Vec(R.Def('', 'Nat -> Nat : Type')) //?
+  let Succs = Vec(new R.Def('', 'Nat -> Nat : Type')) //?
   let succ = new R.Def('succ', '(x => S x) : Nat -> Nat');
 
   R.builtin({ 'Nat -> Nat': v => f => f(R.from(v, 'Nat')) }) //?
@@ -111,7 +111,7 @@ R.ready.then(async () => {
 });
 
 // let/where bindings
-let mirror = R
+let mirror = new R
   .Sig('mirror', '{a : Type} -> List a -> List a')
   .Def(
     "@ xs := xs ++ xs'",
@@ -119,7 +119,7 @@ let mirror = R
   )
 
 // case bindings
-let lookupDefault = R
+let lookupDefault = new R
   .Sig('lookupDefault', '{a : Type} -> Nat -> List a -> a -> a')
   .Def(
     { '@ i xs def := list_lookup i xs': [
@@ -132,19 +132,19 @@ let lookupDefault = R
 
 // mixfix syntax?
 let Sigma = new R.Data(
-  'Sigma (a : Type)(b : a -> Type) : Type',
+  'Sigma', '(a : Type)(b : a -> Type) : Type',
   [ '[_|_] : (x : a) -> b x -> Sigma a b' ]
 )
 
 // records
 let Functor = new R.Record(
-  'Functor (f : Type -> Type) : Type',
+  'Functor', '(f : Type -> Type) : Type',
   [ { 'map : {a, b : Type} -> (a -> b) -> f a -> f b':
     o => o.map } ] // This is important!!
 )
 // infixes?
 let Applicative = new R.Record(
-  'Applicative (f : Type -> Type) : Type,
+  'Applicative', '(f : Type -> Type) : Type',
   [ 'pure : {a : Type} -> a -> f a'
     '(<*> l2) : {a, b : Type} -> f (a -> b) -> f a -> f b' ]
 )
@@ -160,18 +160,18 @@ R.ready.then(async () => {
 
 // proof example
 let Id = new R.Type(
-  'Id (a : Type) : a -> Type',
+  'Id', '(a : Type) : a -> Type',
   [ 'Refl : {x : a} -> (= r4) x x' ]
 )
-let cong = R
+let cong = new R
   .Sig('cong', '{a b : Type}{x, y : a} -> (f : a -> b) -> x = y -> f x = f y')
   .Def('@ f Refl := Refl')
 
 // To use the following signature, make sure pattern matching doesn't imply K
 // vecsEqLength : (xs : Vect a n) -> (ys : Vect a m) -> (xs = ys) -> n = m
-let VecEq = R.Namespace(n => ({
+let VecEq = new R.Namespace(n => ({
   EqVecs: n.Data(
-    '(~=~ r4) : Vec a n -> Vec a m -> Type',
+    '(~=~ r4)', 'Vec a n -> Vec a m -> Type',
     [ 'NilCong : Nil ~=~ Nil',
       'ConsCong x y : {xs, ys} -> (x = y) -> (xs ~=~ ys) -> Cons x xs ~=~ Cons y ys' ]
   ),

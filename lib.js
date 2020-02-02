@@ -3,35 +3,57 @@ var R = (() => {
   // Utilities
 
   const error = {
+        duplicate: n => { throw new Error(`Name '${n}' already exists`) },
+        nosig: n => { throw new Error(`No signature has been declared for ${n}`) },
+        notfound: n => { throw new Error(`Declaration for ${n} cannot be found`) },
         unchecked: () => { throw new Error('Type error: unchecked') },
         lexer: (err, col, info) => { throw new Error(`Lexer error: ${err}\nat ${col}\n${info}`) },
+        internal_ctor_args: () => { throw new Error('Wrong number of constructor arguments') },
+        internal_ctor_invalid: (inv, ctors) => { throw new Error(`${inv} not a valid constructor. Looking for: ${ctors.join(', ')}`); },
         parser:  () => { throw new Error('Parser error') },
         parser_mismatch: (token, index, id, match) => {
           throw new Error(`Parser error: mismatch at '${token.id || ''}'${'value' in token ? `, '${token.value}'` : ''}, token #${index}${
             id ? `: expected '${id}'` : ''}${match ? `, '${match}'` : ''}`) },
         parser_nesting: () => { throw new Error('Parser error: parens nest level too deep') },
-        parser_notid: () => { throw new Error('Parser error: not an identifier') },
-        internal_ctor_args: () => { throw new Error('Wrong number of constructor arguments') },
-        internal_ctor_invalid: (inv, ctors) => { throw new Error(`${inv} not a valid constructor. Looking for: ${ctors.join(', ')}`); }
-      }, showDebug = true, detailedDebug = false;
+        parser_notid: () => { throw new Error('Parser error: not an identifier') }
+      }, showDebug = false, detailedDebug = false;
+
+  let active = [],
+      context = [];
+  function wait (declType, name) {
+    if (~active.findIndex(([d, n]) => d === declType && n === name)) error.duplicate(declType, name);
+    else active.push([declType, name])
+  }
+  function unwait (declType, name) {
+    let i = active.findIndex(([d, n]) => d === declType && n === name);
+    if (!~i) error.notfound(declType, name);
+    else context.push(active.splice(i, 1)[0])
+  }
+  function waiting (declType, name) {
+    return !!~active.findIndex(([d, n]) => d === declType && n === name)
+  }
+  function inContext (declType, name) {
+    return !!~context.findIndex(([d, n]) => d === declType && n === name)
+  }
 
   // Interpreter
 
-  // Data(tcon, [dcons], {...builtins})
-  // Data(tcon, [{dcons}], {...builtins})
+  // Data(name, tcon, [dcons], {...builtins})
+  // Data(name, tcon, [{dcons}], {...builtins})
   class Data {
-    constructor (tcon, dcons, builtins) {
+    constructor (name, tcon, dcons, builtins) {
+      wait('data', name);
       let ready = false, self = {},
           tconLex = tokenise({sourceString: tcon}),
-          lexes = [tconLex].concat(dcons.map(dcon => {
+          dconLexes = dcons.map(dcon => {
             if (typeof dcon === 'string') return tokenise({sourceString: dcon});
             else return tokenise({sourceString: Object.keys(dcon)[0]})
-          }));
-      lexes.reduce((p, l) => p = p.then(acc => acc.concat([parse(l)])), Promise.resolve([]))
+          });
+      sequence(() => dconLexes.reduce((p, l) => p = p.then(acc => parse(l, 'dcon').then(res => acc.concat(res))), parse(tconLex, 'tcon'))
         .then(typecheck).then(decl => {
           ready = true;
-          null
-        });
+          unwait('data', name)
+        }));
       return (...args) => {
         if (ready) return Object.assign(self, {
           typeOf () {  },
@@ -46,29 +68,27 @@ var R = (() => {
   // Sig(name, sigdef)
   class Sig {
     constructor (name, declString) {
+      wait('sig', name);
       let ready = false, self = {},
           lex = tokenise({name, sourceString: declString});
-      console.log(lex)
-      parse(lex).then(typecheck).then(decl => {
+      sequence(() => parse(lex, 'sig').then(typecheck).then(decl => {
         ready = true;
-        null
-      });
-      return { Def: (...args) => {
-        if (ready) return new Def(...args)
-        else error.unchecked()
-      } }
+        unwait('sig', name)
+      }));
+      return { Def: (...args) => new Def(name, ...args) }
     }
   }
 
   // Def(name, sigdef, {...builtins})
   class Def {
     constructor (name, declString, builtins) {
+      wait('def', name);
       let ready = false, self = {},
           lex = tokenise({name, sourceString: declString});
-      parse(lex).then(typecheck).then(decl => {
+      sequence(() => parse(lex, 'def').then(typecheck).then(decl => {
         ready = true;
-        null
-      });
+        unwait('def', name)
+      }));
       return (...args) => {
         if (ready) return Object.assign(self, {
           typeOf () {  },
@@ -235,7 +255,7 @@ var R = (() => {
 
   // Parser
 
-  function parse (tokens) {
+  function parse (tokens, sourceName) {
     if (detailedDebug) Promise = new Proxy(Promise, { construct (obj, args) {
       return new Proxy(new obj(...args), { get (p, prop) {
         if (prop == 'catch') return cb => p.catch(err => {
@@ -254,7 +274,8 @@ var R = (() => {
 
         case 'End statement?': console.log(`%c${msg}`, 'font-weight: bold', token, index); break;
         case 'Signature?': console.log(`%c${msg}`, 'font-weight: bold; color: goldenrod', token, index); break;
-        case 'Sigdef?': console.log(`%c${msg}`, 'font-weight: bold; color: rebeccapurple', token, index); break;
+        case 'Definition?': console.log(`%c${msg}`, 'font-weight: bold; color: rebeccapurple', token, index); break;
+        case 'Sigdef?': console.log(`%c${msg}`, 'font-weight: bold; color: turquoise', token, index); break;
         case 'Type/record constructor?': console.log(`%c${msg}`, 'font-weight: bold; color: forestgreen', token, index); break;
         case 'Data constructor?': console.log(`%c${msg}`, 'font-weight: bold; color: dodgerblue', token, index); break;
         case 'Pattern?': console.log(`%c${msg}`, 'font-weight: bold; color: firebrick', token, index); break;
@@ -301,34 +322,53 @@ var R = (() => {
           return result.concat(decls)
         })
       }
-      return endTest([]).catch(() => alt(() => {
-        // type
-        advance('Signature?', {value: 'name'});
-        return inferrableTerm([], 'pi')
-          .then(result => endTest([result]))
-      })).catch(() => alt(() => {
-        // term : type
-        advance('Sigdef?');
-        throw 'Sigdef'
-        // return telescope([], false)
-        //   .then(({boundvars, types, epsilons}) => console.log('@sigdef', boundvars, types, epsilons))
-        //   .then(() => endTest([]))
-      })).catch(() => alt(() => {
-        // name telescope : type
-        advance('Type/record constructor?');
-        throw 'TCon'
-      })).catch(() => alt(() => {
-        // name : telescope type (?)
-        advance('Data constructor?');
-        throw 'DCon'
-      })).catch(() => alt(() => {
-        // @ terms := term
-        advance('Pattern?');
-        throw 'Pat'
-      })).catch(() => {
-        // name := term
-        advance('Let/where/case?');
-        throw 'Let'
+      return endTest([]).catch(() => {
+        switch (sourceName) {
+          case 'sig': return alt(() => {
+            // term
+            advance('Signature?', {value: 'name'});
+            return inferrableTerm([], 'pi')
+              .then(result => endTest([result]))
+          })
+
+          case 'def': return alt(() => {
+            // term
+            advance('Definition?'/*, {value: 'name'}*/)
+            return inferrableTerm([], 'pi')
+              .catch(err => { console.log(err); throw err })
+              .then(result => endTest([result]))
+          }).catch(() => alt(() => {
+            // term : type
+            advance('Sigdef?');
+            return inferrableTerm([], 'ann')
+              .catch(err => { console.log(err); throw err })
+              .then(result => endTest([result]))
+          }))
+
+          case 'tcon': return alt(() => {
+            // name telescope : type
+            advance('Type/record constructor?');
+            throw 'TCon'
+          })
+
+          case 'dcon': return alt(() => {
+            // name : telescope type (?)
+            advance('Data constructor?');
+            throw 'DCon'
+          })
+
+          case 'pat': return alt(() => {
+            // @ terms := term
+            advance('Pattern?');
+            throw 'Pat'
+          })
+
+          case 'let': return alt(() => {
+            // name := term
+            advance('Let/where/case?');
+            throw 'Let'
+          })
+        }
       })
     }
 
@@ -350,7 +390,7 @@ var R = (() => {
           level--;
           throw err
         })
-      })), Promise.reject()).then(result => [result, gly])
+      })), Promise.reject()).then(result => glyphs.length > 1 ? [result, gly] : result)
     }
 
     function telescope (env, isPi) { // returns { boundvars, types }
@@ -483,10 +523,10 @@ var R = (() => {
           if (!('id' in token) || 'value' in token) throw new Error('');
           return loop()
         }) // x, y, ... =>
-        .catch(err => { if (!err.msg) error.parser_mismatch(token, index) }) })().then(() => {
+        .catch(err => { if (!err.message) error.parser_mismatch(token, index) }) })().then(() => {
           advance('Lambda arrow?', {value: 'op', id: '=>'});
           // x, y, .. => term
-          return checkableTerm('bind', bvs.reverse().concat(env))
+          return checkableTerm(bvs.reverse().concat(env), 'bind')
             .then(tm => bvs.reduce(a => a = new Term({lam: [a]}), tm))
         })
       })
@@ -500,7 +540,10 @@ var R = (() => {
 
   // Typechecking
 
-  function typecheck () {}
+  function typecheck (arg) {
+    console.log(...arg.map(x => x.toString()));
+    return arg
+  }
 
   // API
 
@@ -520,8 +563,13 @@ var R = (() => {
   }
 
   // Tests
-  let test1 = new R.Sig('id', '{T : Type} -> T -> T');
-  // let test2 = new R.Def('id', '(t, x => x)(T : Type) -> T -> T');
+  let id1 = new R
+    .Sig('id', '(T : Type) -> T -> T')
+    .Def('(t, x => x)');
+  let id2 = new R.Def("id'", '(x => x) : {T : Type} -> T -> T',
+    { toString () { return this.value[0].toString() },
+      valueOf () { return this.value[0].valueOf() } }
+  );
   // let test3 = new R.Data('Unit : Type', ['tt : Unit'], { fromJS: () => Unit().tt() });
   // passFail({ test1, test2, test3 })
   await R.ready;
