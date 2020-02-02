@@ -7,12 +7,13 @@ var R = (() => {
         lexer: (err, col, info) => { throw new Error(`Lexer error: ${err}\nat ${col}\n${info}`) },
         parser:  () => { throw new Error('Parser error') },
         parser_mismatch: (token, index, id, match) => {
-          throw new Error(`Parser error: mismatch at '${token.id}', '${token.value}', token #${index}: expected '${id}', '${match}'`) },
+          throw new Error(`Parser error: mismatch at '${token.id || ''}'${'value' in token ? `, '${token.value}'` : ''}, token #${index}${
+            id ? `: expected '${id}'` : ''}${match ? `, '${match}'` : ''}`) },
         parser_nesting: () => { throw new Error('Parser error: parens nest level too deep') },
         parser_notid: () => { throw new Error('Parser error: not an identifier') },
         internal_ctor_args: () => { throw new Error('Wrong number of constructor arguments') },
-        internal_ctor_invalid: (inv, ctors) => { throw new Error(`${inv} not a valid constructor. Looking for: ${(inv, ctors).join(', ')}`); }
-      }, showDebug = true;
+        internal_ctor_invalid: (inv, ctors) => { throw new Error(`${inv} not a valid constructor. Looking for: ${ctors.join(', ')}`); }
+      }, showDebug = true, detailedDebug = false;
 
   // Interpreter
 
@@ -81,7 +82,7 @@ var R = (() => {
   // Lexer
 
   function tokenise ({name, sourceString}) {
-    let rx_token = /^((\s+)|([a-zA-Z][a-zA-Z0-9_]*[\']*)|([:!$%&*+./<=>\?@\\^|\-~\[\]]{1,5})|(0|-?[1-9][0-9]*)|([(),"]))(.*)$/,
+    let rx_token = /^((\s+)|([a-zA-Z][a-zA-Z0-9_]*[\']*)|([:!$%&*+./<=>\?@\\^|\-~\[\]]{1,5})|(0|-?[1-9][0-9]*)|([(){},"]))(.*)$/,
         rx_digits = /^([0-9]+)(.*)$/,
         rx_hexs = /^([0-9a-fA-F]+)(.*)$/,
         tokens = name ? [{id: name, value: 'name'}] : [], pos = 0, word, char;
@@ -214,7 +215,7 @@ var R = (() => {
       switch (this.ctor) {
         case 'ann': return `(${this.value[0].toString()} : ${this.value[1].toString()})`;
         case 'star': return 'Type';
-        case 'pi': return `${this.value[2] && 'Erased'}Pi(${this.value[0].toString()}, ${this.value[1].toString()})`;
+        case 'pi': return `${this.value[2] ? 'Erased' : ''}Pi(${this.value[0].toString()}, ${this.value[1].toString()})`;
         case 'lam': return `Lam(${this.value[0].toString()})`;
         case 'app': return `${this.value[0].toString()} :@: ${this.value[1].toString()}`;
         case 'boundvar': return `Bound ${this.value[0]}`;
@@ -234,12 +235,32 @@ var R = (() => {
 
   // Parser
 
-  function parse (lex) {
+  function parse (tokens) {
+    if (detailedDebug) Promise = new Proxy(Promise, { construct (obj, args) {
+      return new Proxy(new obj(...args), { get (p, prop) {
+        if (prop == 'catch') return cb => p.catch(err => {
+          console.log(err);
+          return cb(err)
+        });
+        else return p[prop]
+      } })
+    } });
+
     function debug (msg, res) {
       if (!showDebug) return;
       switch (msg) {
-        case 'parens_open': console.group('Try parens'); break;
+        case 'enclosure_open': console.group('Try enclosure'); break;
         case 'group_end': console.groupEnd(); break;
+
+        case 'End statement?': console.log(`%c${msg}`, 'font-weight: bold', token, index); break;
+        case 'Signature?': console.log(`%c${msg}`, 'font-weight: bold; color: goldenrod', token, index); break;
+        case 'Sigdef?': console.log(`%c${msg}`, 'font-weight: bold; color: rebeccapurple', token, index); break;
+        case 'Type/record constructor?': console.log(`%c${msg}`, 'font-weight: bold; color: forestgreen', token, index); break;
+        case 'Data constructor?': console.log(`%c${msg}`, 'font-weight: bold; color: dodgerblue', token, index); break;
+        case 'Pattern?': console.log(`%c${msg}`, 'font-weight: bold; color: firebrick', token, index); break;
+        case 'Let/where/case?': console.log(`%c${msg}`, 'font-weight: bold; color: deeppink', token, index); break;
+        case 'Expression:': console.log(msg, res.map(v => v.toString())); break;
+
         default: console.log(msg, tokens[index], index)
       }
     }
@@ -283,13 +304,15 @@ var R = (() => {
       return endTest([]).catch(() => alt(() => {
         // type
         advance('Signature?', {value: 'name'});
-        throw 'Sig'
+        return inferrableTerm([], 'pi')
+          .then(result => endTest([result]))
       })).catch(() => alt(() => {
         // term : type
         advance('Sigdef?');
-        return telescope([], false)
-          .then(({boundvars, types}) => console.log('@sigdef', boundvars, types))
-          .then(() => endTest([]))
+        throw 'Sigdef'
+        // return telescope([], false)
+        //   .then(({boundvars, types, epsilons}) => console.log('@sigdef', boundvars, types, epsilons))
+        //   .then(() => endTest([]))
       })).catch(() => alt(() => {
         // name telescope : type
         advance('Type/record constructor?');
@@ -311,17 +334,17 @@ var R = (() => {
 
     function enclosure (glyphs, fn) {
       if (level > 20) error.parser_nesting();
-      let gly
+      let gly;
       return glyphs.reduce((p, glyph) => p = p.catch(() => alt(() => {
         let [open, close] = ({ parens: ['(', ')'], braces: ['{', '}'] })[gly = glyph]
-        advance('Open enclosure?', {id: 'punc', value: open});
-        debug('parens_open');
-        level++
+        advance(`Open ${gly}?`, {value: 'punc', id: open});
+        debug('enclosure_open');
+        level++;
         return fn().then(result => {
-          advance('Close enclosure?', {id: 'punc', value: close});
+          advance(`Close ${gly}?`, {value: 'punc', id: close});
           debug('group_end');
           level--;
-          return [result]
+          return result
         }).catch(err => {
           debug('group_end');
           level--;
@@ -335,38 +358,50 @@ var R = (() => {
         // '{a} b c'
         advance('Binding variable?');
         if (!('id' in token) || 'value' in token) error.parser_mismatch(token, index);
-        return (function loop (bvs) { return alt(() => {
-          advance('Binding comma?', {id: 'punc', value: ','});
+        let bvs = [[token, false]]
+        return (function loop () { return alt(() => {
           advance('Binding next variable?');
           if (!('id' in token) || 'value' in token) error.parser_notid();
-          // TODO: ...{a}...
+          // TODO: erased pi ...{a}...
           bvs.push([token, false]);
           return loop(bvs)
         }).catch(() => {
-          advance('Binding operator?', {id: 'op', value: ':'});
+          // vars : ...
+          advance('Binding operator?', {value: 'op', id: ':'});
           return bvs
-        }) })([token])
+        }) })()
       }
-      return altMsg('Try bindings', function loop (e, t, ep) {
-        return enclosure(['parens', 'braces'], boundvars).then(([{bvs, type}, which]) => {
-          checkableTerm(isPi ? e : [], 'bind').then(type => ({
-            bvs: bvs.map(x => x[0]).reverse().concat(e),
-            tys: bvs.map(() => type).concat(t),
-            eps: bvs.map(() => ({ parens: false, braces: true })[which]).concat(ep)
-          }))
-        }).then(tele => alt(() => loop(tele.bvs, tele.tys, tele.eps))
-          .catch(() => ({boundvars: tele.bvs, types: tele.tys})))
-      })(env, [], []).catch(() => boundvars().then(bvs =>
-        checkableTerm(env, 'bind').then(tm =>
-          ({boundvars: bvs.map(x => x[0]), types: boundvars.map(() => tm), epsilon: bvs.map(x => x[1])})
-        )
-      ))
+      return altMsg('Try bindings', () => {
+        let tele = {bvs: [], tys: [], eps: []};
+        return (function loop (e, t, ep) {
+          // (vars : term) *or* {vars : term}
+          return enclosure(['parens', 'braces'], () => boundvars().then(bvs => checkableTerm(isPi ? e : [], 'bind').then(type => [bvs, type])))
+            .then(([[bvs, type], gly]) => {
+              tele = {
+                bvs: bvs.map(x => x[0]).reverse().concat(e),
+                tys: bvs.map(() => type).concat(t),
+                eps: bvs.map(x => ({ parens: false, braces: true })[gly] || x[1]).reverse().concat(ep)
+              };
+              return alt(() => loop(tele.bvs, tele.tys, tele.eps))
+            }) // {bnd1} (bnd2)...
+            .catch(() => ({boundvars: tele.bvs, types: tele.tys, epsilons: tele.eps}))
+        })(env, [], [])
+        .catch(() => boundvars().then(bvs =>
+          // vars : term
+          checkableTerm(env, 'bind').then(tm =>
+            ({boundvars: bvs.map(x => x[0]), types: boundvars.map(() => tm), epsilons: bvs.map(x => x[1])})
+          )
+        ))
+      })
     }
 
     function checkableTerm (env, clause) {
       switch (clause) {
+        // lam *or* pi
         case 'bind': return altMsg('Try checkable term', () => lambda(env))
-          .catch(() => inferrableTerm(env, 'pi'));
+          .catch(() => inferrableTerm(env, 'pi'))
+
+        // (lam) *or* term
         default: return altMsg('Try checkable term', () => enclosure(['parens'], () => lambda(env)))
           .catch(() => inferrableTerm(env, clause))
       }
@@ -374,53 +409,63 @@ var R = (() => {
 
     function inferrableTerm (env, clause) {
       function arrow (env, term) {
-        advance('Function arrow?', {id: 'op', value: '->'});
+        advance('Function arrow?', {value: 'op', id: '->'});
         return inferrableTerm([''].concat(env), 'pi')
-          .then(piBound => new Term({pi: [ term, piBound ]}))
+          .then(piBound => new Term({pi: [ term, piBound, false ]}))
       }
       function annot (term) {
         return alt(() => {
-          advance('Annotated term?', {id: 'op', value: ':'});
+          advance('Annotated term?', {value: 'op', id: ':'});
           return checkableTerm(env, 'bind')
             .then(ty => new Term({ann: [term, ty]}))
-        })
+        }).catch(() => term)
       }
       switch (clause) {
-        // {bnd}(bnd)->type->type
         case 'pi': return altMsg('Try Pi', () =>
-          telescope(env, true).then(({boundvars, types, epsilon}) => {
-            advance('Function arrow? (leftmost)', {id: 'op', value: '->'}); //?
-            checkableTerm(boundvars.concat(env), 'bind').then(piBound => {
+          // {bnd} (bnd)...
+          telescope(env, true).then(({boundvars, types, epsilons}) => {
+            advance('Function arrow? (leftmost)', {value: 'op', id: '->'}); //?
+            // {bnd} (bnd)... -> term -> term...
+            return checkableTerm(boundvars.concat(env), 'bind').then(piBound => {
               let type = types.shift();
-              return types.reduce((acc, ty, i) => acc = new Term({pi: [t, acc, epsilon[i]]}), new Term({pi: [type, piBound, epsilon[0]]}))
+              return types.reduce((acc, ty, i) => acc = new Term({pi: [t, acc, epsilons[i]]}), new Term({pi: [type, piBound, epsilons[0]]}))
             })
           })
-        ) .catch(() => alt(() => lambda(env)))
-          .catch(() => alt(() => inferrableTerm(env, 'ann').then(ann =>
-            alt(() => arrow(env, ann)).catch(() => ann))
+        ) // lam
+          .catch(() => alt(() => lambda(env)))
+          // (ann)->...
+          .catch(() => alt(() => inferrableTerm(env, 'ann').then(tm =>
+            alt(() => arrow(env, tm)).catch(() => tm))
           ))
 
+        // f a b... : term
         case 'ann': return altMsg('Try Annotation', () => inferrableTerm(env, 'app').then(annot))
+        // (lam) : term
           .catch(() => enclosure(['parens'], () => lambda(env)).then(annot))
 
+        // f a b...
         case 'app': return inferrableTerm(env, 'var').then(tm => altMsg('Try apply', () => {
           let ts = [];
           debug('Application?');
-          return (function loop () { return inferrableTerm(env, 'var').then(cterm => {
+          // TODO: erased application f {a} b...
+          return (function loop () { return checkableTerm(env, 'var').then(cterm => {
             ts.push(cterm);
             return loop()
-          }) })().catch(() => ts.reduce((acc, term) => a = new AST.App(acc, term), tm))
+          }) })().catch(() => ts.reduce((acc, term) => a = new Term({app: [acc, term]}), tm))
         }).catch(() => tm))
 
+        // Type
         case 'var': return alt(() => {
-          advance('Star?', {value: 'Type'});
+          advance('Star?', {id: 'Type'});
           return new Term({star: []})
-        }).catch(() => alt(() => {
+        }) // a *or* [x=>][(x:X)->] x
+        .catch(() => alt(() => {
           advance('Variable term?');
           if (!('id' in token) || 'value' in token) error.parser_mismatch(token, index);
           let i = env.findIndex(bv => bv.id === token.id);
           return ~i ? new Term({boundvar: [i]}) : new Term({freevar: [ new Name({global: [token.id]}) ]})
-        })).catch(() => enclosure(['parens', () => inferrableTerm(env, 'pi')]))
+        })) // (pi)
+        .catch(() => enclosure(['parens'], () => inferrableTerm(env, 'pi')))
       }
     }
 
@@ -429,24 +474,28 @@ var R = (() => {
         advance('Lambda bound variable?');
         if (!('id' in token) || 'value' in token) error.parser_mismatch(token, index);
         let bvs = [];
+        // x, y, ...
         return (function loop () { return alt(() => {
           bvs.push(token);
-          advance('Lambda comma?', {id: 'punc', value: ','});
+          advance('Lambda comma?', {value: 'punc', id: ','});
+          // TODO: erased lambda {x}, y,...
           advance('Lambda next variable?');
           if (!('id' in token) || 'value' in token) throw new Error('');
           return loop()
-        }).catch(err => { if (!err.msg) error.parser_mismatch(token, index) }) })().then(() => {
-          advance('Lambda arrow?', {id: 'op', value: '=>'});
+        }) // x, y, ... =>
+        .catch(err => { if (!err.msg) error.parser_mismatch(token, index) }) })().then(() => {
+          advance('Lambda arrow?', {value: 'op', id: '=>'});
+          // x, y, .. => term
           return checkableTerm('bind', bvs.reverse().concat(env))
             .then(tm => bvs.reduce(a => a = new Term({lam: [a]}), tm))
         })
       })
     }
 
-    let token, tokens = lex, index = 0, level = 0;
+    let token = tokens[0], index = 0, level = 0;
     return parseStatement([], [])
       .then(result => (debug('Expression:', result), result))
-      .catch(error.parser)
+      .catch(err => console.log(err))
   }
 
   // Typechecking
@@ -471,7 +520,7 @@ var R = (() => {
   }
 
   // Tests
-  let test1 = new R.Sig('id', '(T : Type) -> T -> T');
+  let test1 = new R.Sig('id', '{T : Type} -> T -> T');
   // let test2 = new R.Def('id', '(t, x => x)(T : Type) -> T -> T');
   // let test3 = new R.Data('Unit : Type', ['tt : Unit'], { fromJS: () => Unit().tt() });
   // passFail({ test1, test2, test3 })

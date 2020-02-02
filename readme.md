@@ -10,10 +10,10 @@ I like the promise of efficiency from using interaction nets as well so I'm also
 
 ### Target usage
 ```
-// functions
+// functions, lambdas
 let id1 = R
   .Sig('id', '(T : Type) -> T -> T')
-  .Def('t , x => x');
+  .Def('t, x => x');
 
 // functions with builtins
 let id2 = R.Def("id'", '(x => x) : {T : Type} -> T -> T',
@@ -164,7 +164,7 @@ let Id = new R.Type(
   [ 'Refl : {x : a} -> (= r4) x x' ]
 )
 let cong = R
-  .Sig('cong', '{a, b : Type}{x, y : a} -> (f : a -> b) -> x = y -> f x = f y')
+  .Sig('cong', '{a b : Type}{x, y : a} -> (f : a -> b) -> x = y -> f x = f y')
   .Def('@ f Refl := Refl')
 
 // To use the following signature, make sure pattern matching doesn't imply K
@@ -176,7 +176,7 @@ let VecEq = R.Namespace(n => ({
       'ConsCong x y : {xs, ys} -> (x = y) -> (xs ~=~ ys) -> Cons x xs ~=~ Cons y ys' ]
   ),
   vecsEqLength: n
-    .Sig('vecsEqLength', '{n, m : Nat}{xs : Vec a n}{ys : Vec a m} -> (xs ~=~ ys) -> n = m')
+    .Sig('vecsEqLength', '{n m : Nat}{xs : Vec a n}{ys : Vec a m} -> (xs ~=~ ys) -> n = m')
     .Def(
       '@ NilCong := Refl',
       '@ (ConsCong _ e) := cong S (vecsEqLength e)'
@@ -189,6 +189,6 @@ R.ready.then(async () => {
 
 // After cubical...
 let funext = R
-  .Sig('funext', '{a : Type}{b : a -> Type}{f, g : (x : a) -> b x} -> Type -> Type')
+  .Sig('funext', '{a : Type}{b : a -> Type}{f g : (x : a) -> b x} -> Type -> Type')
   .Def('@ := {x} -> (f x = g x) -> f = g')
 ```
