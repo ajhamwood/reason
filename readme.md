@@ -23,11 +23,11 @@ let id2 = new R.Def("id'", '(x => x) : {T : Type} -> T -> T',
 
 // types
 let Unit = new R.Data(
-  'Unit', 'Type', ['tt : Unit'],
+  'Unit', 'Type', ['TT : Unit'],
   { fromJS: () => Unit().tt() }
 );
 let Nat_ = new R.Data(
-  "Nat' : Type",
+  "Nat'", 'Type',
   [ 'Z : Nat',
     'S : Nat -> Nat' ]
 )

@@ -200,6 +200,7 @@ var R = (() => {
     equal (operand) {
       return this.ctor === operand.ctor && this.value[0] === operand.value[0]
     }
+    toString () { return this.value[0] }
   }
   class Value extends AST('vlam', 'vstar', 'vpi', 'vneutral') {}
   class Neutral extends AST('nfree', 'ntcon', 'ndcon', 'napp') {}
@@ -663,7 +664,7 @@ var id = new R.Sig('id',
 var Void = new R.Data({ typeName: 'Void', valueOf: () => undefined });
 
 var Unit = new R.Data({ typeName: 'Unit', valueOf: () => null }, [
-  { ctorName: 'tt', toString: () => '()' }
+  { ctorName: 'TT', toString: () => '()' }
 ]);
 
 var Bool = new R.Data({ typeName: 'Bool' }, [
