@@ -23,17 +23,19 @@ var R = (() => {
               parser_notid: () => 'Parser error: not an identifier',
               parser_notvalid: which => `Parser error: not a valid ${which}`,
 
-              tc_mismatch: (tested, given) => `Type mismatch - found ${tested.toString()}, rather than ${given.toString()}`, // TODO: pretty print
-              tc_ann_mismatch: tested => `Annotation should have type Type, found ${tested.toString()}`,
-              tc_pi_mismatch: (loc, tested) => `Pi ${loc} should have type Type, found ${tested.toString()}`,
-              tc_app_mismatch: tested => `Illegal application - expected type Pi, found ${tested.toString()}`,
-              tc_unknown_id: name => `Unknown identifier: ${name.value[0]}`,
-              tc_dcon_ambiguity: () => 'Ambiguous data constructor',
-              tc_dcon_cannot_infer: () => 'Cannot infer data constructor parameters. Try adding an annotation.',
-              tc_dcon_arg_len: (mlen, tlen) => `Data constructor given wrong number of arguments - (${mlen} instead of ${tlen})`,
-              tc_lam_mismatch: ctor => `Lambda has Pi type, not ${ctor}`,
-              tc_lam_infer: () => 'Cannot infer type of lambda',
-              tc_bad_app: () => 'Bad value application'
+              tc_mismatch: (tested, given) => `Type error: mismatch at ${tested.toString()}, expecting ${given.toString()}`, // TODO: pretty print
+              tc_ann_mismatch: tested => `Type error: annotation should have type Type, found ${tested.toString()}`,
+              tc_pi_mismatch: (loc, tested) => `Type error: Pi ${loc} should have type Type, found ${tested.toString()}`,
+              tc_app_mismatch: tested => `Type error: illegal application - expected type Pi, found ${tested.toString()}`,
+              tc_unknown_id: name => `Type error: unknown identifier ${name.value[0]}`,
+              tc_dcon_ambiguity: () => 'Type error: ambiguous data constructor',
+              tc_dcon_cannot_infer: () => 'Type error: cannot infer data constructor parameters. Try adding an annotation.',
+              tc_dcon_arg_len: (mlen, tlen) => `Type error: data constructor given wrong number of arguments - (${mlen} instead of ${tlen})`,
+              tc_lam_mismatch: ctor => `Type error: lambda has Pi type, not ${ctor}`,
+              tc_lam_infer: () => 'Type error: cannot infer type of lambda',
+              tc_bad_app: () => 'Type error: bad value application',
+              tc_erased_var_subst: () => 'Type error: erased variable used in lambda',
+              tc_erasure_mismatch: () => 'Type error: erasure mismatch'
             })[prop] || (() => prop))(...args)) }
           } });
   let showDebug = false;
@@ -122,24 +124,22 @@ var R = (() => {
   class Def {
     constructor (name, declString, builtins) {
       wait('def', name);
-      let ready = false, jsTerm,
+      let ready = false, jsTerm = builtins,
           lex = tokenise({name, sourceString: declString});
       sequence(() => parse(lex, 'def').then(decls => typecheck(decls, context)).then(ress => {
         ress.forEach(res => {
-          let {decl, term, type, value} = res;
+          let {decl, term, type, value} = res,
+              appliedTerms = [];
           if (decl === 'sig') Object.assign(jsTerm, {type: term, typeValue: value});
-          if (decl === 'def') Object.assign(jsTerm, {term, value, typeValue: type})
+          if (decl === 'def') Object.assign(jsTerm, {term, value, typeValue: type, appliedTerms})
         })
         ready = true;
         unwait('def', name)
       }));
-      return jsTerm = (...args) => {
-        if (ready) return Object.assign(jsTerm, {
-          typeOf () {  },
-          quote () {  }
-        });
+      return jsTerm = Object.assign((...args) => {
+        if (ready) return jsTerm; // TODO: typecheck and return new term
         else error.unchecked()
-      }
+      }, jsTerm)
     }
   }
 
@@ -282,7 +282,7 @@ var R = (() => {
         case 'ann': return `(${this.value[0].toString()} : ${this.value[1].toString()})`;
         case 'star': return 'Type';
         case 'pi': return `${this.value[2] ? 'Erased' : ''}Pi(${this.value[0].toString()}, ${this.value[1].toString()})`;
-        case 'lam': return `Lam(${this.value[0].toString()})`;
+        case 'lam': return `${this.value[1] ? 'Erased' : ''}Lam(${this.value[0].toString()})`;
         case 'app': return `${this.value[0].toString()} :@: ${this.value[1].toString()}`;
         case 'boundvar': return `Bound ${this.value[0]}`;
         case 'freevar': return `Free ${this.value[0]}`;
@@ -522,7 +522,7 @@ var R = (() => {
           return (function loop () { return alt(() => {
             advance('Binding next variable?');
             if (!('id' in token) || 'value' in token) error.parser_notid();
-            bvs.push([token, false]);
+            bvs.unshift([token, false]);
             return loop(bvs)
           }).catch(() => {
             // vars : ...
@@ -537,9 +537,9 @@ var R = (() => {
             return enclosure(['parens', 'braces'], () => boundvars().then(bvs => checkableTerm(isPi ? e : [], 'bind').then(type => [bvs, type])))
               .then(([[bvs, type], gly]) => {
                 tele = {
-                  bvs: bvs.map(x => x[0]).reverse().concat(e),
+                  bvs: bvs.map(x => x[0]).concat(e),
                   tys: bvs.map(() => type).concat(t),
-                  eps: bvs.map(x => ({ parens: false, braces: true })[gly] || x[1]).reverse().concat(ep)
+                  eps: bvs.map(x => ({ parens: false, braces: true })[gly] || x[1]).concat(ep)
                 };
                 return alt(() => loop(tele.bvs, tele.tys, tele.eps))
               }) // {bnd1} (bnd2)...
@@ -645,26 +645,33 @@ var R = (() => {
       }
 
       function lambda (env) {
-        return altMsg('Try Lambda', () => {
-          advance('Lambda bound variable?');
-          assertId();
-          let bvs = [];
-          // x, y, ...
-          return (function loop () { return alt(() => {
-            bvs.push(token);
-            advance('Lambda comma?', {value: 'punc', id: ','});
-            // TODO: erased lambda {x}, y,...
-            advance('Lambda next variable?');
-            if (!('id' in token) || 'value' in token) throw new Error('');
-            return loop()
-          }) // x, y, ... =>
-            .catch(err => { if (!err.message) error.parser_mismatch(token, index) }) })().then(() => {
-              advance('Lambda arrow?', {value: 'op', id: '=>'});
-              // x, y, .. => term
-              return checkableTerm(bvs.reverse().concat(env), 'bind')
-                .then(tm => bvs.reduce(a => a = new Term({lam: [a, false]}), tm))
-            })
-        })
+        let bvs = [], eps = [],
+            nextVar = ep => () => {
+              advance(`Lambda next variable${ep ? ' (erased)' : ''}?`);
+              if (!('id' in token) || 'value' in token) throw new Error('');
+              return Promise.resolve({bv: token, ep})
+            },
+            loop = (bv, ep) => alt(() => {
+              bvs.unshift(bv);
+              eps.unshift(ep);
+              advance('Lambda comma?', {value: 'punc', id: ','});
+              // x, {y}, ...
+              return enclosure(['braces'], nextVar(true))
+              // x, y, ...
+                .catch(() => alt(nextVar(false)))
+                .then(({bv, ep}) => loop(bv, ep))
+            }).catch(err => { if (!err.message) error.parser_mismatch(token, index) });
+        // {x} ...
+        return altMsg('Try Lambda', () => enclosure(['braces'], nextVar(true)))
+        // x ...
+          .catch(() => alt(nextVar(false)))
+          .then(({bv, ep}) => loop(bv, ep))
+          .then(() => {
+            advance('Lambda arrow?', {value: 'op', id: '=>'});
+            // x, y, .. => term
+            return checkableTerm(bvs.concat(env), 'bind')
+              .then(tm => bvs.reduce((a, _, i) => a = new Term({lam: [a, eps[i]]}), tm))
+          })
       }
 
       let token = tokens[0], index = 0, level = 0;
@@ -726,7 +733,7 @@ var R = (() => {
               if (type1.ctor !== 'vstar') error.tc_pi_mismatch('domain', quote(type1));
               return infer(
                 ctx.cons(new Decl({sig: [ local, evaluate(term.value[0], ctx) ]})),
-                subst(new Term({freevar: [ local ]}), term.value[1]), index + 1)
+                subst(new Term({freevar: [ local ]}), term.value[1], false), index + 1)
                 .then(type2 => {
                   if (type2.ctor !== 'vstar') error.tc_pi_mismatch('range', quote(type2));
                   return vstar
@@ -771,11 +778,12 @@ var R = (() => {
         switch (term.ctor) {
           case 'lam':
           if (typeVal.ctor !== 'vpi') error.tc_lam_mismatch(typeVal.ctor);
+          if (term.value[1] !== typeVal.value[2]) error.tc_erasure_mismatch();
           else {
             let local = new Name({local: [index]});
             return check(
               ctx.cons(new Decl({sig: [ local, typeVal.value[0] ]})),
-              subst(new Term({freevar: [ local ]}), term.value[0]),
+              subst(new Term({freevar: [ local ]}), ...term.value),
               typeVal.value[1](vfree(local)), index + 1)
               .then(() => ({term, type: typeVal}))
           }
@@ -815,17 +823,18 @@ var R = (() => {
       }
     }
 
-    function subst (term1, term2, index = 0) {
+    function subst (term1, term2, ep, index = 0) {
       switch (term2.ctor) {
-        case 'ann': return new Term({ann: [ subst(term1, term2.value[0], index), subst(term1, term2.value[1], index), term2.value[2] ]})
-        case 'pi': return new Term({pi: [ subst(term1, term2.value[0], index), subst(term1, term2.value[1], index + 1), term2.value[2] ]})
-        case 'lam': return new Term({lam: [ subst(term1, term2.value[0], index + 1), term2.value[1] ]})
-        case 'app': return new Term({app: [ subst(term1, term2.value[0], index), subst(term1, term2.value[1], index) ]})
-        case 'boundvar': return index === term2.value[0] ? term1 : term2
+        case 'ann': return new Term({ann: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index), term2.value[2] ]})
+        case 'pi': return new Term({pi: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index + 1), term2.value[2] ]})
+        case 'lam': return new Term({lam: [ subst(term1, term2.value[0], ep, index + 1), term2.value[1] ]})
+        case 'app': return new Term({app: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index) ]})
+        case 'boundvar': return index !== term2.value[0] ? term2 : !ep ? term1 : error.tc_erased_var_subst()
         case 'star': case 'freevar': case 'tcon': case 'dcon': return term2
       }
     }
 
+    // TODO: combine Value and Neutral?
     function vfree (name) { return new Value({vneutral: [ new Neutral({nfree: [name]}) ]}) } // TODO: accept tcon and dcon?
     function vapply (value1, value2, epsilon) {
       switch (value1.ctor) {
@@ -924,16 +933,15 @@ let id1, id2, Unit, Nat_;
   id1 = new R
     .Sig('id', '(T : Type) -> T -> T')
     .Def('(t, x => x)');
-  id2 = new R.Def("id'", '(x => x) : {T : Type} -> T -> T')
+
+  // functions with builtins
+  id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
+    { toString () { return this[0].toString() },
+    valueOf () { return this[0].valueOf() } }
+  );
   await R.ready;
   console.log(id1, id2)
 
-  // // functions with builtins
-  // id2 = new R.Def("id'", '(x => x) : {T : Type} -> T -> T',
-  //   { toString () { return this[0].toString() },
-  //     valueOf () { return this[0].valueOf() } }
-  // );
-  // await R.ready;
   //
   // // types
   // Unit = new R.Data(
