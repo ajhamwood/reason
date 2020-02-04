@@ -660,7 +660,6 @@ var id = new R.Sig('id',
 // var id = new R.Sig('id:=(t,x=>x):(T:Type)->T->T')
 // var id = new R.Sig('id:=(x=>x):[T:Type]->T->T')
 
-
 var Void = new R.Data({ typeName: 'Void', valueOf: () => undefined });
 
 var Unit = new R.Data({ typeName: 'Unit', valueOf: () => null }, [
