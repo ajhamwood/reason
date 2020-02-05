@@ -7,42 +7,53 @@ var R = (() => {
           }, { get (o, prop) {
             if (prop in o) return o[prop];
             else return (...args) => { throw new Error((({
-              duplicate: n => `Name '${n}' already exists`,
-              nosig: n => `No signature has been declared for ${n}`,
-              notfound: n => `Declaration for ${n} cannot be found`,
-              unchecked: () => 'Type error: unchecked',
+              // Interpreter errors
+              duplicate: n => `Interpreter error: name '${n}' already exists`,
+              nosig: n => `Interpreter error: no signature has been declared for ${n}`,
+              notfound: n => `Interpreter error: declaration for ${n} cannot be found`,
+              unchecked: () => 'Interpreter error: not yet typechecked',
 
+              // Lexer errors
               lexer: (err, col, info) => `Lexer error: ${err}\nat ${col}\n${info}`,
 
-              internal_ctor_args: () => 'Wrong number of constructor arguments',
-              internal_ctor_invalid: (inv, ctors) => `${inv} not a valid constructor. Looking for: ${ctors.join(', ')}`,
+              // AST errors
+              internal_ctor_args: () => 'AST error: Wrong number of constructor arguments',
+              internal_ctor_invalid: (inv, ctors) => `AST error: ${inv} not a valid constructor. Looking for: ${ctors.join(', ')}`,
 
+              // Parser errors
               parser_mismatch: (token, index, id, match) => `Parser error: mismatch at '${token.id || ''}'${
                 'value' in token ? `, '${token.value}'` : ''}, token #${index}${id ? `: expected '${id}'` : ''}${match ? `, '${match}'` : ''}`,
               parser_nesting: () => 'Parser error: parens nest level too deep',
               parser_notid: () => 'Parser error: not an identifier',
               parser_notvalid: which => `Parser error: not a valid ${which}`,
 
+              // Typechecking errors
               tc_mismatch: (tested, given) => `Type error: mismatch at ${tested.toString()}, expecting ${given.toString()}`, // TODO: pretty print
+              tc_lam_mismatch: ctor => `Type error: lambda has Pi type, not ${ctor}`,
+              tc_lam_infer: () => 'Type error: cannot infer type of lambda',
               tc_ann_mismatch: tested => `Type error: annotation should have type Type, found ${tested.toString()}`,
               tc_pi_mismatch: (loc, tested) => `Type error: Pi ${loc} should have type Type, found ${tested.toString()}`,
               tc_app_mismatch: tested => `Type error: illegal application - expected type Pi, found ${tested.toString()}`,
+              tc_bad_app: () => 'Type error: bad value application',
               tc_unknown_id: name => `Type error: unknown identifier ${name.value[0]}`,
               tc_dcon_ambiguity: () => 'Type error: ambiguous data constructor',
               tc_dcon_cannot_infer: () => 'Type error: cannot infer data constructor parameters. Try adding an annotation.',
               tc_dcon_arg_len: (mlen, tlen) => `Type error: data constructor given wrong number of arguments - (${mlen} instead of ${tlen})`,
-              tc_lam_mismatch: ctor => `Type error: lambda has Pi type, not ${ctor}`,
-              tc_lam_infer: () => 'Type error: cannot infer type of lambda',
-              tc_bad_app: () => 'Type error: bad value application',
+
               tc_erased_var_subst: () => 'Type error: erased variable used in lambda',
-              tc_erasure_mismatch: () => 'Type error: erasure mismatch'
+              tc_erasure_mismatch: () => 'Type error: erasure mismatch',
+              tc_constraint_cannot_eq: (lhs, rhs) => `Cannot equate lhs and rhs of constraint ${lhs.toString()} = ${rhs.toString()}`,
+              tc_internal: () => 'Type error: internal construct',
+              tc_internal_subst: () => 'Internal error: substTele given illegal arguments'
             })[prop] || (() => prop))(...args)) }
           } });
   let showDebug = false;
   function triggerProxyPromise () {
     let px = (obj, args) => new Proxy(new obj(...args), { get (p, prop) {
       if (prop === 'catch') return cb => p.catch(err => {
-        console.log('catch', err);
+        console.groupCollapsed(`%c${err && err.message}`, 'font-weight: bold; color: red');
+        console.log(err);
+        console.groupEnd();
         return cb(err)
       });
       else return cb => p[prop](res => cb(res))
@@ -54,22 +65,17 @@ var R = (() => {
     }, construct (obj, args) { return px(obj, args) } })
   }
 
-  let active = [],
-      contextOld = [];
+  let active = [];
   function wait (declType, name) {
     if (~active.findIndex(([d, n]) => d === declType && n === name)) error.duplicate(declType, name);
     else active.push([declType, name])
   }
   function unwait (declType, name) {
     let i = active.findIndex(([d, n]) => d === declType && n === name);
-    if (!~i) error.notfound(declType, name);
-    else contextOld.push(active.splice(i, 1)[0])
+    if (!~i) error.notfound(declType, name)
   }
   function waiting (declType, name) {
     return !!~active.findIndex(([d, n]) => d === declType && n === name)
-  }
-  function inContext (declType, name) {
-    return !!~contextOld.findIndex(([d, n]) => d === declType && n === name)
   }
 
 
@@ -80,26 +86,28 @@ var R = (() => {
   // Data(name, tcon, [dcons], {...builtins})
   // Data(name, tcon, [{dcons}], {...builtins})
   class Data {
-    constructor (name, tcon, dcons, builtins) {
+    constructor (name, ddef, cdefs, builtins) {
       wait('data', name);
-      let ready = false, self = {},
-          tconLex = tokenise({name, sourceString: tcon}),
-          dconLexes = dcons.map(dcon => {
-            if (typeof dcon === 'string') return tokenise({sourceString: dcon});
-            else return tokenise({sourceString: Object.keys(dcon)[0]})
+      let ready = false, jsTerm = {},
+          ddefLex = tokenise({name, sourceString: ddef}),
+          cdefLexes = cdefs.map(cdef => {
+            if (typeof cdef === 'string') return tokenise({sourceString: cdef});
+            else return tokenise({sourceString: Object.keys(cdef)[0]})
           });
-      sequence(() => dconLexes.reduce((p, l) => p = p.then(acc => parse(l, 'con').then(res => (acc[0].value[2].push(res[0]), acc))), parse(tconLex, 'data'))
+      sequence(() => cdefLexes.reduce((p, l) => p.then(acc => parse(l, 'cdef').then(res => (acc[0].value[2].push(res[0]), acc))), parse(ddefLex, 'ddef'))
         .then(decls => typecheck(decls, context)).then(res => {
+          let [{decl, params, type, ctors}] = res,
+              appliedTerms = [];
+          if (decl === 'data') Object.assign(jsTerm, {params, type, ctors, appliedTerms})
           ready = true;
           unwait('data', name)
         }));
-      return (...args) => {
-        if (ready) return Object.assign(self, {
-          typeOf () {  },
-          quote () {  }
-        });
-        else error.unchecked()
-      }
+      return jsTerm = Object.assign((...args) => {
+        if (ready) {
+          jsTerm.appliedTerms = jsTerm.appliedTerms.concat(args);
+          return jsTerm
+        } else error.unchecked()
+      }, jsTerm)
     }
   }
 
@@ -116,7 +124,7 @@ var R = (() => {
         ready = true;
         unwait('sig', name)
       }));
-      return { Def: (...args) => jsTerm = new Def(name, ...args) }
+      return { Def: (...args) => jsTerm = Object.assign(new Def(name, ...args), jsTerm) }
     }
   }
 
@@ -137,8 +145,10 @@ var R = (() => {
         unwait('def', name)
       }));
       return jsTerm = Object.assign((...args) => {
-        if (ready) return jsTerm; // TODO: typecheck and return new term
-        else error.unchecked()
+        if (ready) {
+          jsTerm.appliedTerms = jsTerm.appliedTerms.concat(args);
+          return jsTerm; // TODO: typecheck and return new term
+        }else error.unchecked()
       }, jsTerm)
     }
   }
@@ -147,8 +157,8 @@ var R = (() => {
 
   // Lexer
 
-  function tokenise ({name, sourceString}) {
-    let rx_token = /^((\s+)|([a-zA-Z][a-zA-Z0-9_]*[\']*)|([:!$%&*+./<=>\?@\\^|\-~\[\]]{1,5})|(0|-?[1-9][0-9]*)|([(){},"]))(.*)$/,
+  function tokenise ({name, sourceString}) { // TODO: refactor using alt()
+    let rx_token = /^((\s+)|([a-zA-Z][a-zA-Z0-9_]*[\']*)|([:!$%&*+.,/<=>\?@\\^|\-~\[\]]{1,5})|(0|-?[1-9][0-9]*)|([(){}"]))(.*)$/,
         rx_digits = /^([0-9]+)(.*)$/,
         rx_hexs = /^([0-9a-fA-F]+)(.*)$/,
         tokens = name ? [{id: name, value: 'name'}] : [], pos = 0, word, char;
@@ -275,7 +285,10 @@ var R = (() => {
 
   class Term extends AST('ann', 'star', 'pi', 'lam', 'app', 'boundvar', 'freevar' ,'tcon', 'dcon') {
     equal (operand) {
-      return this.ctor === operand.ctor && this.value.every((x, i) => x === operand.value[i] || x.equal(operand.value[i]))
+      return this.ctor === operand.ctor &&
+        this.value.every((x, i) => x === operand.value[i] ||
+          ('equal' in x && x.equal(operand.value[i])) ||
+          x.every((y, j) => y === operand.value[i][j]))
     }
     toString () {
       switch (this.ctor) {
@@ -287,8 +300,8 @@ var R = (() => {
         case 'boundvar': return `Bound ${this.value[0]}`;
         case 'freevar': return `Free ${this.value[0]}`;
 
-        case 'tcon': return `[TC:${this.value[0].value[0]} ${this.value[1].toString()}]`;
-        case 'dcon': return `DC:${this.value[0].value[0]} (${this.value[1].toString()})`;
+        case 'tcon': return `TC:${this.value[0].value[0]}${this.value[1].map(x => ` (${x.toString()})`).join('')}`;
+        case 'dcon': return `DC:${this.value[0].value[0]}${this.value[1].map(x => ` (${x.toString()})`).join('')}`;
       }
     }
   }
@@ -324,18 +337,19 @@ var R = (() => {
       }
     }
     term (...args) {
-      this.items.push(new Item({term: args}));
+      this.items.push(new Item({term: args.filter(x => typeof x !== 'undefined')}));
       this.length++;
       return this
     }
     erased (...args) {
-      this.items.push(new Item({erased: args}));
+      this.items.push(new Item({erased: args.filter(x => typeof x !== 'undefined')}));
       return this
     }
     constraint (...args) {
-      this.items.push(new Item({constraint: args}));
+      this.items.push(new Item({constraint: args.filter(x => typeof x !== 'undefined')}));
       return this
     }
+    tail () { return new Tele(...this.items.slice(0, -1)) }
     equal (operand) { return this.items.every((x, i) => x.equal(operand.items[i])) }
     toString () { return this.items.map(x => x.toString()).join(' ')  }
   }
@@ -361,10 +375,12 @@ var R = (() => {
 
   // Parser
 
-  let { parse } = new (class Parser {
-    env = []
+  let parser = new (class Parser {
+    tnames = []
+    dnames = []
     parse (tokens, sourceName) {
       // TODO: mixfix operators
+      // triggerProxyPromise()
 
       function debug (msg, res) {
         if (!showDebug) return;
@@ -398,6 +414,17 @@ var R = (() => {
       function alt (fn) {
         let rewind = index;
         return new Promise(r => r(fn())).catch(err => {
+          index = rewind;
+          throw err
+        })
+      }
+      function altNames (fn) {
+        let rewind = index, tnames = [], dnames = [];
+        return new Promise(r => r(fn.bind({tnames, dnames})())).then(res => {
+          parser.tnames = parser.tnames.concat(tnames);
+          parser.dnames = parser.dnames.concat(dnames.filter(c => !~parser.dnames.indexOf(c)));
+          return res
+        }).catch(err => {
           index = rewind;
           throw err
         })
@@ -452,25 +479,27 @@ var R = (() => {
                 .then(result => endTest([new Decl({def: [ new Name({global: [name.id]}), result ]})]))
             })).catch(() => error.parser_notvalid('definition'))
 
-            case 'data': return alt(() => {
+            case 'ddef': return altNames(function () {
               // name bindings : type
               // For now, only allow tcon indexes of type Type, until I can
               // compare Idris or Agda with the constraint solver in pi-forall
               // for how to implement dependent type families
               advance('Type/record definition?', {value: 'name'});
               let name = token;
-              return inferrableTerm([], 'data')
+              this.tnames.push(name.id);
+              return dataDef([], 'ddef')
                 .then(result => endTest([new Decl({data: [ new Name({global: [name.id]}), result, [] ] })]))
                 .catch(() => error.parser_notvalid('type definition'))
             })
 
-            case 'con': return alt(() => {
+            case 'cdef': return altNames(function () {
               // name : bindings type (?)
               advance('Constructor definition?');
               assertId();
               let name = token;
+              this.dnames.push(name.id);
               advance('Type constructor separator?', {value: 'op', id: ':'});
-              return inferrableTerm([], 'con')
+              return dataDef([], 'cdef')
                 .then(result => endTest([new Ctor({ctor: [ new Name({global: [name.id]}), result ]})]))
                 .catch(() => error.parser_notvalid('constructor definition'))
             })
@@ -514,7 +543,7 @@ var R = (() => {
       }
 
       function telescope (env, isPi) { // returns { boundvars, types, epsilons }
-        function boundvars () {
+        function bindvars () { // If a lone binding is in context, it's a value. Otherwise, it's a type.
           // '{a} b c'
           advance('Binding variable?');
           assertId();
@@ -533,8 +562,9 @@ var R = (() => {
         return altMsg('Try bindings', () => {
           let tele = {bvs: [], tys: [], eps: []};
           return (function loop (e, t, ep) {
-            // (vars : term) *or* {vars : term}
-            return enclosure(['parens', 'braces'], () => boundvars().then(bvs => checkableTerm(isPi ? e : [], 'bind').then(type => [bvs, type])))
+            // (bnd) *or* {bnd}
+            return enclosure(['parens', 'braces'], () =>
+              bindvars().then(bvs => checkableTerm(isPi ? e : [], 'bind').then(type => [bvs, type])))
               .then(([[bvs, type], gly]) => {
                 tele = {
                   bvs: bvs.map(x => x[0]).concat(e),
@@ -545,7 +575,7 @@ var R = (() => {
               }) // {bnd1} (bnd2)...
               .catch(() => ({boundvars: tele.bvs, types: tele.tys, epsilons: tele.eps}))
           })(env, [], [])
-            .catch(() => boundvars().then(bvs =>
+            .catch(() => bindvars().then(bvs =>
               // vars : term
               checkableTerm(env, 'bind').then(tm =>
                 ({boundvars: bvs.map(x => x[0]), types: boundvars.map(() => tm), epsilons: bvs.map(x => x[1])})
@@ -580,23 +610,7 @@ var R = (() => {
           }).catch(() => term)
         }
 
-        let data = false;
         switch (clause) {
-          case 'data': data = true;
-          case 'con': return altMsg(`Try ${data ? 'Type' : 'Constructor'} Definition`, () =>
-            alt(() => telescope(env, true).then(tele => {
-              data ?
-                // {bnd} (bnd)... : term -> term...
-                advance('Typedef separator?', {value: 'op', id: ':'}) :
-                  // {bnd} (bnd)... -> term -> term...
-                advance('Condef arrow? (leftmost)', {value: 'op', id: '->'});
-              return tele
-            })).catch(() => ({boundvars: [], types: [], epsilons: []}))
-              .then(({boundvars, types, epsilons}) => inferrableTerm(boundvars.concat(env), 'pi').then(typeFam =>
-                types.reduce((acc, ty, i) => acc = acc[epsilons[i] ? 'erased' : 'term'](new Name({global: [boundvars[i].id]}), ty), new Tele()).term(typeFam)
-              ))
-          )
-
           // {bnd} (bnd)...
           case 'pi': return altMsg('Try Pi', () =>
             telescope(env, true).then(({boundvars, types, epsilons}) => {
@@ -614,9 +628,25 @@ var R = (() => {
             ))
 
           // f a b... : term
-          case 'ann': return altMsg('Try Annotation', () => inferrableTerm(env, 'app').then(annot))
+          case 'ann': return altMsg('Try Annotation', () => inferrableTerm(env, 'ctor'))
+            .catch(() => alt(() => inferrableTerm(env, 'app'))).then(annot)
             // (lam) : term
             .catch(() => enclosure(['parens'], () => lambda(env)).then(annot))
+
+          // t a b...
+          case 'ctor': return altMsg('Try Constructor', () => { // BUG: should also test for ctor @case var
+            let ts = [];
+            advance('Constructor term?');
+            assertId();
+            let name = token.id, ctor;
+            if (~parser.tnames.indexOf(name)) ctor = 'tcon';
+            else if (~parser.dnames.indexOf(name)) ctor = 'dcon';
+            else throw new Error('');
+            return (function loop () { return checkableTerm(env, 'var').then(cterm => {
+              ts.push(cterm);
+              return loop()
+            }) })().catch(() => new Term({[ctor]: [new Name({global: [name]}), ts]}))
+          })
 
           // f a b...
           case 'app': return inferrableTerm(env, 'var').then(tm => altMsg('Try apply', () => {
@@ -626,7 +656,7 @@ var R = (() => {
             return (function loop () { return checkableTerm(env, 'var').then(cterm => {
               ts.push(cterm);
               return loop()
-            }) })().catch(() => ts.reduce((acc, term) => a = new Term({app: [acc, term, false]}), tm))
+            }) })().catch(() => ts.reduce((acc, term) => acc = new Term({app: [acc, term, false]}), tm))
           }).catch(() => tm))
 
           // Type
@@ -654,7 +684,7 @@ var R = (() => {
             loop = (bv, ep) => alt(() => {
               bvs.unshift(bv);
               eps.unshift(ep);
-              advance('Lambda comma?', {value: 'punc', id: ','});
+              advance('Lambda comma?', {value: 'op', id: ','});
               // x, {y}, ...
               return enclosure(['braces'], nextVar(true))
               // x, y, ...
@@ -674,11 +704,28 @@ var R = (() => {
           })
       }
 
+      function dataDef (env, clause) {
+        let data = clause === 'ddef';
+        return altMsg(`Try ${data ? 'Type' : 'Constructor'} Definition`, () =>
+          alt(() => telescope(env, false).then(tele => {
+            data ?
+              // {bnd} (bnd)... : term -> term...
+              advance('Typedef separator?', {value: 'op', id: ':'}) :
+                // {bnd} (bnd)... -> term -> term...
+              advance('Condef arrow? (leftmost)', {value: 'op', id: '->'});
+            return tele
+          })).catch(() => ({boundvars: [], types: [], epsilons: []}))
+            .then(({boundvars, types, epsilons}) => inferrableTerm(env, 'pi').then(typeFam =>
+              types.reduceRight((acc, ty, i) => acc[epsilons[i] ? 'erased' : 'term'](new Name({global: [boundvars[i].id]}), ty), new Tele()).term(typeFam)
+            ))
+        )
+      }
+
       let token = tokens[0], index = 0, level = 0;
       return parseStatement([], [])
         .then(result => (debug('Expression:', result), result))
     }
-  });
+  }), { parse } = parser;
 
 
 
@@ -691,16 +738,16 @@ var R = (() => {
     constructor (obj) { if (obj) this.decls = obj.decls.slice() }
     lookup (name, ctor, annot) {
       if (ctor === 'ctor') {
-        let mbCon;
+        let mbCdef;
         if (typeof annot === 'undefined') return this.decls.reduce((a, decl) => {
-          if (decl.ctor === 'data' && (mbCon = decl.value[2].find(con => con.value[0].equal(name))))
-            a.push({tname: decl.value[0], tdef: decl.value[1], con: mbCon.value[1]});
+          if (decl.ctor === 'data' && (mbCdef = decl.value[2].find(cdef => cdef.value[0].equal(name))))
+            a.push({tname: decl.value[0], ddef: decl.value[1], cdef: mbCdef.value[1]});
           return a
         }, []);
         else {
-          let mbDef = this.decls.find(decl => decl.ctor === 'data' && decl.value[0].equal(annot.value[0]) &&
-            (mbCon = decl.value[2].find(con => con.value[0].equal(name))));
-          return { tdef: mbDef.value[1], con: mbCon.value[1] }
+          let mbDdef = this.decls.find(decl => decl.ctor === 'data' && decl.value[0].equal(annot) &&
+            (mbCdef = decl.value[2].find(cdef => cdef.value[0].equal(name))));
+          return { ddef: mbDdef.value[1], cdef: mbCdef.value[1] }
         }
       }
       let result = this.decls.find(decl => (decl.ctor === ctor || (ctor === 'data' && decl.ctor === 'datasig')) && decl.value[0].equal(name));
@@ -714,10 +761,17 @@ var R = (() => {
       return ret
     }
     localVal (i) { return this.decls[this.decls.length - i - 1].value[1] }
+    concatTele (tele) {
+      return tele.items.reduce((acc, item) => { switch (item.ctor) {
+        case 'term': return acc.cons(new Decl({sig: [item.value[0].value[0], item.value[1]]}))
+        case 'constraint': return acc.cons({def: item.value})
+      } }, new Context(this))
+    }
   }
   const context = new Context();
 
   function typecheck (decls) {
+    // Infer/check
     function infer (ctx, term, index = 0) { //context, term, number -> value
       return Promise.resolve().then(() => {
         let result, vstar = new Value({vstar: []}), local = new Name({local: [index]});
@@ -733,7 +787,7 @@ var R = (() => {
               if (type1.ctor !== 'vstar') error.tc_pi_mismatch('domain', quote(type1));
               return infer(
                 ctx.cons(new Decl({sig: [ local, evaluate(term.value[0], ctx) ]})),
-                subst(new Term({freevar: [ local ]}), term.value[1], false), index + 1)
+                subst(new Term({freevar: [ local ]}), term.value[1], term.value[2]), index + 1)
                 .then(type2 => {
                   if (type2.ctor !== 'vstar') error.tc_pi_mismatch('range', quote(type2));
                   return vstar
@@ -743,7 +797,7 @@ var R = (() => {
           case 'app': return infer(ctx, term.value[0], index)
             .then(type => {
               if (type.ctor !== 'vpi') error.tc_app_mismatch(quote(type));
-              let [dom, func] = type.value, lam = value;
+              let [dom, func] = type.value;
               return check(ctx, term.value[1], dom, index)
                 .then(() => func(evaluate(term.value[1], ctx)))
             })
@@ -755,8 +809,10 @@ var R = (() => {
           case 'tcon':
           if (term.value.length === 1) term.value.push([]) //?
           result = ctx.lookup(term.value[0], 'data');
-          if (result.length !== term.value[1].length) error.tc_dcon_arg_len(term.value[1].length, result.length);
-          return tcArgTele(ctx, term.value[1], result).then(() => vstar)
+          if (result.length - 1 > term.value[1].length) error.tc_dcon_arg_len(term.value[1].length, result.length - 1);
+          else if (result.length - 1 < term.value[1].length)
+            return infer(ctx, term.value[1].splice(result.length - 1).reduce((acc, tm) => new Term({app: [acc, tm]}), term), index);
+          return tcArgTele(ctx, term.value[1], result.tail()).then(() => result.items[result.items.length - 1].value[1])
 
           case 'dcon':
           if (typeof term.value[2] !== 'undefined') return check(ctx, term, term.value[2], index);
@@ -764,9 +820,11 @@ var R = (() => {
           let matches = ctx.lookup(term.value[0], 'ctor');
           if (matches.length !== 1) error.tc_dcon_ambiguity();
           let match = matches[0];
-          if (match.tdef.length !== 0) error.tc_dcon_cannot_infer();
-          if (term.value[1].length !== match.con.length) error.tc_dcon_arg_len(match.con.length, term.value[1].length);
-          return tcArgTele(ctx, term.value[1], match.con).then(() => evaluate(new Term({tcon: [ match.tname ]}), ctx))
+          if (match.ddef.length !== 0) error.tc_dcon_cannot_infer();
+          if (match.cdef.length - 1 > term.value[1].length) error.tc_dcon_arg_len(term.value[1].length, match.cdef.length - 1);
+          else if (match.cdef.length - 1 < term.value[1].length)
+            return infer(ctx, term.value[1].splice(match.cdef.length - 1).reduce((acc, tm) => new Term({app: [acc, tm]}), term), index);
+          return tcArgTele(ctx, term.value[1], match.cdef.tail()).then(() => evaluate(new Term({tcon: [ match.tname ]}), ctx))
 
           case 'lam': error.tc_lam_infer()
         }
@@ -793,10 +851,12 @@ var R = (() => {
           if (typeof term.value[2] !== 'undefined' && !term.value[2].equal(type)) error.tc_mismatch(term.value[2], type);
           if (term.value.length === 1) term.value.push([]) //?
           let match = ctx.lookup(term.value[0], 'ctor', type.value[0]);
-          if (match.con.length !== term.value[1].length) error.tc_dcon_arg_len(match.con.length, term.value[1].length);
-          let items = substTele(ctx, match.tdef, term.value[1], match.con);
-          return tcArgTele(ctx, term.value[1], new Tele(...items))
-            .then(eterms => ({ term: new Term({dcon: [ term.value[0], eterms, typeVal ]}), type: typeVal }))
+          if (match.cdef.length - 1 > term.value[1].length) error.tc_dcon_arg_len(term.value[1].length, match.cdef.length - 1);
+          if (match.cdef.length - 1 < term.value[1].length)
+            return check(ctx, term.value[1].splice(match.cdef.length - 1).reduce((acc, tm) => new Term({app: [acc, tm]}), term), typeVal, index);
+          let items = substTele(ctx, match.ddef, term.value[1], match.cdef);
+          return tcArgTele(ctx, term.value[1], new Tele(...items.slice(0, -1)))
+            .then(terms => ({ term: new Term({dcon: [ term.value[0], terms, typeVal ]}), type: typeVal }))
 
           default: return infer(ctx, term, index)
             .then(type => {
@@ -806,6 +866,18 @@ var R = (() => {
             })
         }
       })
+    }
+
+    // Terms
+    function subst (term1, term2, ep, index = 0) {
+      switch (term2.ctor) {
+        case 'ann': return new Term({ann: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index) ]})
+        case 'pi': return new Term({pi: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index + 1), term2.value[2] ]})
+        case 'lam': return new Term({lam: [ subst(term1, term2.value[0], ep, index + 1), term2.value[1] ]})
+        case 'app': return new Term({app: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index) ]})
+        case 'boundvar': return index !== term2.value[0] ? term2 : !ep ? term1 : error.tc_erased_var_subst()
+        case 'star': case 'freevar': case 'tcon': case 'dcon': return term2
+      }
     }
 
     function evaluate (term, ctx) {
@@ -823,17 +895,7 @@ var R = (() => {
       }
     }
 
-    function subst (term1, term2, ep, index = 0) {
-      switch (term2.ctor) {
-        case 'ann': return new Term({ann: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index), term2.value[2] ]})
-        case 'pi': return new Term({pi: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index + 1), term2.value[2] ]})
-        case 'lam': return new Term({lam: [ subst(term1, term2.value[0], ep, index + 1), term2.value[1] ]})
-        case 'app': return new Term({app: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index) ]})
-        case 'boundvar': return index !== term2.value[0] ? term2 : !ep ? term1 : error.tc_erased_var_subst()
-        case 'star': case 'freevar': case 'tcon': case 'dcon': return term2
-      }
-    }
-
+    // Values
     // TODO: combine Value and Neutral?
     function vfree (name) { return new Value({vneutral: [ new Neutral({nfree: [name]}) ]}) } // TODO: accept tcon and dcon?
     function vapply (value1, value2, epsilon) {
@@ -865,7 +927,96 @@ var R = (() => {
       }
     }
 
+    // Telescopes
+    function tcTele (ctx, tele) {
+      return tele.items.reduce((p, item) => p.then(acc => {
+        switch (item.ctor) {
+          case 'term': case 'erased':
+          let [name, type] = item.value.length === 2 ? item.value :  // TODO: generate wildcards in the parser (boundvars)
+            [ new Name({global: [ctx.fresh()]}), item.value[0] ];
+          return check(ctx, type, new Value({vstar: []}))
+            .then(() => ctx.extend(new Decl({sig: [ name, type = evaluate(type, ctx) ]})))
+            .then(() => acc.concat([new Item({term: [ new Term({freevar: [name]}), type ]})]))
+
+          case 'constraint':
+          return infer(ctx, item.value[0])
+            .then(type => check(ctx, item.value[1]), type)
+            .then(() => constraintToDecls(ctx, ...item.value))
+            .then(decls => decls.forEach(decl => ctx.extend(decl)))
+            .then(() => acc.concat([item]))
+        }
+      }), Promise.resolve([])).then(items => new Tele(...items))
+    }
+
+    function constraintToDecls (ctx, term1, term2) {
+      let decls = [];
+      if (term1.equal(term2)) return decls;
+      if (term1.ctor === 'app' && term2.ctor === 'app') decls = decls
+        .concat(constraintToDecls(ctx, term1.value[0], term2.value[0]))
+        .concat(constraintToDecls(ctx, term1.value[1], term2.value[1]));
+      else if (term1.ctor === 'freevar') return [ new Decl({def: [term1.value[0], term2]}) ];
+      else if (term2.ctor === 'freevar') return [ new Decl({def: [term2.value[0], term1]}) ];
+      else error.tc_constraint_cannot_eq()
+    }
+
+    function tcArgTele (ctx, terms, tele) { // treat telescope bindings as functions?
+      let rightTele = new Tele(...tele.items), runtimeTerms = [],
+          loop = i => {
+            if (rightTele.items.length === 0) return Promise.resolve();
+            let item = rightTele.items[0];
+            switch (item.ctor) {
+              case 'term': case 'erased': return check(ctx, terms[i], item.value[1]).then(() => {
+                rightTele = new Tele(...doSubst(ctx, [[rightTele.items.shift().value[0].value[0], terms[i]]], rightTele));
+                runtimeTerms.push(terms[i])
+                return loop(i + 1)
+              })
+
+              case 'constraint':
+              if (item.value[0].equal(item.value[1])) return loop(i + 1);
+              error.tc_mismatch(...item.value)
+            }
+          };
+      return loop(0).then(() => runtimeTerms)
+    }
+
+    function doSubst (ctx, nameTerms, tele) {
+      return tele.items.map(item => {
+        switch (item.ctor) {
+          case 'term': case 'erased':
+          let type = nameTerms.reduce((acc, [name, term]) => substFV(term, acc, name), quote(item.value[1]));
+          return new Item({[item.ctor]: [item.value[0], evaluate(type, ctx)]})
+
+          case 'constraint':
+          let substItems = item.map(side => nameTerms.reduce((acc, [name, term]) => substFV(term, acc, name), side));
+          constraintToDecls(ctx, ...substItem.value).forEach(decl => ctx.extend(decl));
+          return new Item({constraint: substItems})
+        }
+      })
+    }
+
+    function substFV (term1, term2, name) {
+      switch (term2.ctor) {
+        case 'ann': return new Term({ann: [ substFV(term1, term2.value[0], name), substFV(term1, term2.value[1], name) ]})
+        case 'pi': return new Term({pi: [ substFV(term1, term2.value[0], name), substFV(term1, term2.value[1], name), term2.value[2] ]})
+        case 'lam': return new Term({lam: [ substFV(term1, term2.value[0], name), term2.value[1] ]})
+        case 'app': return new Term({app: [ substFV(term1, term2.value[0], name), substFV(term1, term2.value[1], name) ]})
+        case 'freevar': return name === term2.value[0] ? term1 : term2
+        case 'star': case 'boundvar': case 'tcon': case 'dcon': return term2
+      }
+    }
+
+    function substTele (ctx, tele1, terms, tele2) {
+      return doSubst(ctx, tele1.items.map((item, i) => {
+        switch (item.ctor) {
+          case 'term': return [item.value[0].value[0], terms[i]];
+          default: error.tc_internal_subst()
+        }
+      }), tele2)
+    }
+
+    // Main typecheck
     return decls.reduce((p, decl) => p = p.then(acc => {
+      console.log(decl.toString());
       let [name, info, ctors] = decl.value, mbValue, value;
       switch (decl.ctor) {
         case 'sig':
@@ -900,7 +1051,19 @@ var R = (() => {
             })
         }
 
-        case 'data': console.log(decl.toString())
+        case 'data':
+        return tcTele(new Context(context), info).then(tele =>
+          ctors.reduce((p, ctor) => p = p.then(acc =>
+            tcTele(context.cons(new Decl({datasig: [name, tele]})).concatTele(tele), ctor.value[1])
+              .then(ctorTele => acc.concat([new Ctor({ctor: [ctor.value[0], ctorTele]})]))
+          ), Promise.resolve([])).then(ctors => {
+            let decl = new Decl({data: [name, tele, ctors]});
+            context.extend(decl);
+            return [{decl: 'data', params: tele.tail(), type: tele.items.slice(-1), ctors}]
+          })
+        )
+
+        case 'recdef': case 'datasig': error.tc_internal()
       }
     }), Promise.resolve([]))
   }
@@ -922,36 +1085,43 @@ var R = (() => {
 
 // Testing
 
-let id1, id2, Unit, Nat_;
+let id1, id2, Unit, Nat_, Vec_;
 (async () => {
   let passFail = obj => {
     for (let test in obj) try { console.log(obj[test]()) }
       catch (e) { console.log(test, e) }
   }
 
-  // functions, lambdas
-  id1 = new R
-    .Sig('id', '(T : Type) -> T -> T')
-    .Def('(t, x => x)');
-
-  // functions with builtins
-  id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
-    { toString () { return this[0].toString() },
-    valueOf () { return this[0].valueOf() } }
-  );
-  await R.ready;
-  console.log(id1, id2)
-
+  // // functions, lambdas
+  // id1 = new R
+  //   .Sig('id', '(T : Type) -> T -> T')
+  //   .Def('(t, x => x)');
   //
+  // // functions with builtins
+  // id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
+  //   { toString () { return this[0].toString() },
+  //   valueOf () { return this[0].valueOf() } }
+  // );
+  // await R.ready;
+  // console.log(id1, id2)
+
   // // types
   // Unit = new R.Data(
   //   'Unit', 'Type', ['TT : Unit'],
   //   { fromJS: () => Unit().tt() }
   // );
-  // Nat_ = new R.Data(
-  //   "Nat'", 'Type',
-  //   [ 'Z : Nat',
-  //     'S : (n:Nat) -> Nat' ]
-  // )
+  Nat_ = new R.Data(
+    "Nat'", 'Type',
+    [ "Z : Nat'",
+      "S : (n:Nat') -> Nat'" ]
+  );
+  await R.ready;
+
+  // List_ = new R.Data("List'", "(A:Type):Type", [ "Nil:List' A", "Cons:(x:A)(xs:List' A)->List' A" ]);
+  //
+  Vec_ = new R.Data("Vec'", "(A : Type) : Nat' -> Type",
+    [ "Nil : Vec' A (Z)",
+      "Cons : {n : Nat'}(x : A)(xs : Vec' A n) -> Vec' A (S n)" ]
+  );
   await R.ready;
 })()
