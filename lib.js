@@ -51,7 +51,7 @@ var Reason = options => {
               tc_internal: () => 'Type error: internal construct',
 
               // Internal error
-              internal_arg: fname => `Type error: internal function ${fname} given illegal arguments`
+              internal_arg: fname => `Internal error: internal function ${fname} given illegal arguments`
             })[prop] || (() => prop))(...args)) }
           } });
   function triggerProxyPromise () {
@@ -307,7 +307,7 @@ var Reason = options => {
         case 'freevar': return `Free ${this.value[0]}`;
 
         case 'tcon': return `TC:${this.value[0].value[0]}${this.value[1].map(x => ` (${x.toString()})`).join('')}`;
-        case 'dcon': return `DC:${this.value[0].value[0]}${this.value[1].map(x => ` (${x.toString()})`).join('')}`;
+        case 'dcon': return `DC:${this.value[0].value[0]}${this.value[1].map(x => ` ${x.toString()}`).join('')}`;
       }
     }
   }
@@ -376,6 +376,10 @@ var Reason = options => {
   class Value extends AST('vlam', 'vstar', 'vpi', 'vneutral') {}
   class Neutral extends AST('nfree', 'ntcon', 'ndcon', 'napp') {}
 
+  class Arg extends AST('arg') { // Only dcons have Args
+    toString () { return this.value[1] ? `{${this.value[0].toString()}}` : `(${this.value[0].toString()})` }
+  }
+
 
 
 
@@ -391,7 +395,6 @@ var Reason = options => {
       function debug (msg, res) {
         if (!showDebug) return;
         switch (msg) {
-          case 'enclosure_open': console.group('Try enclosure'); break;
           case 'group_end': console.groupEnd(); break;
 
           case 'End statement?': console.log(`%c${msg}`, 'font-weight: bold', token, index); break;
@@ -438,13 +441,13 @@ var Reason = options => {
       function altMsg (msg, fn) {
         return alt(!showDebug ? fn : () => {
           console.group(msg);
-          return fn().then(result => {
-            console.groupEnd();
-            return result
-          }).catch(err => {
-            console.groupEnd();
-            throw err
-          })
+          return fn()
+        }).then(result => {
+          console.groupEnd();
+          return result
+        }).catch(err => {
+          console.groupEnd();
+          throw err
         })
       }
 
@@ -526,27 +529,24 @@ var Reason = options => {
       function enclosure (glyphs, fn) {
         if (level > 20) error.parser_nesting();
         let gly;
-        return glyphs.reduce((p, glyph) => p.catch(() => alt(() => {
+        return glyphs.reduce((p, glyph) => p.catch(() => altMsg('Try enclosure', () => {
           let [open, close] = ({ parens: ['(', ')'], braces: ['{', '}'] })[gly = glyph]
-          advance(`Open ${gly}?`, {value: 'punc', id: open});
-          debug('enclosure_open');
           level++;
+          advance(`Open ${gly}?`, {value: 'punc', id: open});
           return fn().then(result => {
             advance(`Close ${gly}?`, {value: 'punc', id: close});
             return result
           })
         }).then(result => {
-          debug('group_end');
           level--;
           return result
         }).catch(err => {
-          debug('group_end');
           level--;
           throw err
         })), Promise.reject()).then(result => glyphs.length > 1 ? [result, gly] : result)
       }
 
-      function telescope (env, isPi) { // returns { boundvars, types, epsilons }
+      function bindings (env, isPi) { // returns { boundvars, types, epsilons }
         function bindvars () { // If a lone binding is in context, it's a value. Otherwise, it's a type.
           // '{a} b c'
           advance('Binding variable?');
@@ -617,7 +617,7 @@ var Reason = options => {
         switch (clause) {
           // {bnd} (bnd)...
           case 'pi': return altMsg('Try Pi', () =>
-            telescope(env, true).then(({boundvars, types, epsilons}) => {
+            bindings(env, true).then(({boundvars, types, epsilons}) => {
               // {bnd} (bnd)... -> term -> term...
               advance('Function arrow? (leftmost)', {value: 'op', id: '->'});
               return checkableTerm(boundvars.concat(env), 'bind').then(piBound =>
@@ -638,7 +638,7 @@ var Reason = options => {
             .catch(() => enclosure(['parens'], () => lambda(env)).then(annot))
 
           // t a b...
-          case 'ctor': return altMsg('Try Constructor', () => { // BUG: should also test for ctor @case var
+          case 'ctor': return altMsg('Try Constructor', () => {
             let ts = [];
             advance('Constructor term?');
             assertId();
@@ -646,28 +646,37 @@ var Reason = options => {
             if (~parser.tnames.indexOf(name)) ctor = 'tcon';
             else if (~parser.dnames.indexOf(name)) ctor = 'dcon';
             else throw new Error('');
-            return (function loop () { return checkableTerm(env, 'var').then(cterm => {
-              ts.push(cterm);
-              return loop()
-            }) })().catch(() => new Term({[ctor]: [new Name({global: [name]}), ts]}))
+            return (function loop () {
+              let wrapTerm = isWrapped => () => checkableTerm(env, 'var').then(cterm => {
+                ts.push(isWrapped ? [cterm] : cterm);
+                return loop()
+              });
+              return ctor === 'tcon' ? wrapTerm(false)() : enclosure(['braces'], wrapTerm(false)).catch(wrapTerm(true))
+            })().catch(() => new Term({[ctor]: [ new Name({global: [name]}),
+              ts.map(x => ctor === 'tcon' ? x : new Arg({arg: [ x[0], !!x[1] ]}))
+            ]}))
           })
 
           // f a b...
           case 'app': return inferrableTerm(env, 'var').then(tm => altMsg('Try apply', () => {
             let ts = [];
             debug('Application?');
-            // TODO: erased application f {a} b...
-            return (function loop () { return checkableTerm(env, 'var').then(cterm => {
-              ts.push(cterm);
-              return loop()
-            }) })().catch(() => ts.reduce((acc, term) => acc = new Term({app: [acc, term, false]}), tm))
+            return (function loop () {
+              let wrapTerm = isWrapped => () => checkableTerm(env, 'var').then(cterm => {
+                ts.push(isWrapped ? [cterm] : cterm);
+                return loop()
+              });
+              return enclosure(['braces'], wrapTerm(false)).catch(wrapTerm(true))
+            })().catch(() => ts.reduce((acc, [term, mbBraces]) => acc = new Term({app: [acc, term, !!mbBraces]}), tm))
           }).catch(() => tm))
 
           // Type
           case 'var': return alt(() => {
             advance('Star?', {id: 'Type'});
             return new Term({star: []})
-          }) // a *or* [x=>][(x:X)->] x
+          }) // data constructor
+            .catch(() => alt(() => inferrableTerm(env, 'ctor')))
+             // a *or* [x=>][(x:X)->] x
             .catch(() => alt(() => {
               advance('Variable term?');
               assertId();
@@ -711,7 +720,7 @@ var Reason = options => {
       function dataDef (env, clause) {
         let data = clause === 'ddef';
         return altMsg(`Try ${data ? 'Type' : 'Constructor'} Definition`, () =>
-          alt(() => telescope(env, false).then(tele => {
+          alt(() => bindings(env, false).then(tele => {
             data ?
               // {bnd} (bnd)... : term -> term...
               advance('Typedef separator?', {value: 'op', id: ':'}) :
@@ -720,7 +729,8 @@ var Reason = options => {
             return tele
           })).catch(() => ({boundvars: [], types: [], epsilons: []}))
             .then(({boundvars, types, epsilons}) => inferrableTerm(env, 'pi').then(typeFam =>
-              types.reduceRight((acc, ty, i) => acc[epsilons[i] ? 'erased' : 'term'](new Name({global: [boundvars[i].id]}), ty), new Tele()).term(typeFam)
+              types.reduceRight((acc, ty, i) => acc[epsilons[i] ? 'erased' : 'term'](new Name({global: [boundvars[i].id]}), ty), new Tele())
+                .term(typeFam, new Term({star: []}))
             ))
         )
       }
@@ -767,7 +777,7 @@ var Reason = options => {
     localVal (i) { return this.decls[this.decls.length - i - 1].value[1] }
     concatTele (tele) {
       return tele.items.reduce((acc, item) => { switch (item.ctor) {
-        case 'term': return acc.cons(new Decl({sig: [item.value[0].value[0], item.value[1]]}))
+        case 'term': case 'erased': return acc.cons(new Decl({sig: [item.value[0].value[0], item.value[1]]}))
         case 'constraint': return acc.cons({def: item.value})
       } }, new Context(this))
     }
@@ -800,7 +810,9 @@ var Reason = options => {
                 })
             })
 
-          case 'app': return infer(ctx, term.value[0], index)
+          case 'app':
+          console.log('app', term)
+          return infer(ctx, term.value[0], index)
             .then(type => {
               if (type.ctor !== 'vpi') error.tc_app_mismatch(quote(type));
               let [dom, func] = type.value;
@@ -815,10 +827,12 @@ var Reason = options => {
           case 'tcon':
           if (term.value.length === 1) term.value.push([]) //?
           result = ctx.lookup(term.value[0], 'data');
+          console.log('tcon', result.items, term.value[1].slice())
           if (result.length - 1 > term.value[1].length) error.tc_dcon_arg_len(term.value[1].length, result.length - 1);
           else if (result.length - 1 < term.value[1].length)
-            return infer(ctx, term.value[1].splice(result.length - 1).reduce((acc, tm) => new Term({app: [acc, tm]}), term), index);
-          return tcArgTele(ctx, term.value[1], result.tail()).then(() => result.items[result.items.length - 1].value[1])
+            return infer(ctx, term.value[1].slice(result.length - 1).reduce((acc, tm) => new Term({app: [acc, tm, false]}),
+              new Term({tcon: [term.value[0], term.value[1].slice(0, result.length - 1)]})), index);
+          return tcArgTele(ctx, term.value[1].map(x => new Arg({arg: [x, false]})), result.tail()).then(() => result.items.slice(-1)[0].value[1])
 
           case 'dcon':
           if (typeof term.value[2] !== 'undefined') return check(ctx, term, term.value[2], index);
@@ -829,7 +843,8 @@ var Reason = options => {
           if (match.ddef.length !== 0) error.tc_dcon_cannot_infer();
           if (match.cdef.length - 1 > term.value[1].length) error.tc_dcon_arg_len(term.value[1].length, match.cdef.length - 1);
           else if (match.cdef.length - 1 < term.value[1].length)
-            return infer(ctx, term.value[1].splice(match.cdef.length - 1).reduce((acc, tm) => new Term({app: [acc, tm]}), term), index);
+            return infer(ctx, term.value[1].slice(match.cdef.length - 1).reduce((acc, tm) => new Term({app: [acc, ...tm.value]}),
+              new Term({dcon: [term.value[0], term.value[1].slice(0, result.length - 1), term.value[2]]})), index);
           return tcArgTele(ctx, term.value[1], match.cdef.tail()).then(() => evaluate(new Term({tcon: [ match.tname ]}), ctx))
 
           case 'lam': error.tc_lam_infer()
@@ -842,6 +857,7 @@ var Reason = options => {
         switch (term.ctor) {
           case 'lam':
           if (typeVal.ctor !== 'vpi') error.tc_lam_mismatch(typeVal.ctor);
+          // if erasedpi then add constraint to context?
           if (term.value[1] !== typeVal.value[2]) error.tc_erasure_mismatch();
           else {
             let local = new Name({local: [index]});
@@ -859,10 +875,11 @@ var Reason = options => {
           let match = ctx.lookup(term.value[0], 'ctor', type.value[0]);
           if (match.cdef.length - 1 > term.value[1].length) error.tc_dcon_arg_len(term.value[1].length, match.cdef.length - 1);
           if (match.cdef.length - 1 < term.value[1].length)
-            return check(ctx, term.value[1].splice(match.cdef.length - 1).reduce((acc, tm) => new Term({app: [acc, tm]}), term), typeVal, index);
+            return check(ctx, term.value[1].slice(match.cdef.length - 1).reduce((acc, tm) => new Term({app: [acc, ...tm.value]}),
+              new Term({dcon: [term.value[0], term.value[1].slice(0, result.length - 1), term.value[2]]})), typeVal, index);
           let items = substTele(ctx, match.ddef, term.value[1], match.cdef);
           return tcArgTele(ctx, term.value[1], new Tele(...items.slice(0, -1)))
-            .then(terms => ({ term: new Term({dcon: [ term.value[0], terms, typeVal ]}), type: typeVal }))
+            .then(args => ({ term: new Term({dcon: [ term.value[0], args, typeVal ]}), type: typeVal }))
 
           default: return infer(ctx, term, index)
             .then(type => {
@@ -880,7 +897,7 @@ var Reason = options => {
         case 'ann': return new Term({ann: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index) ]})
         case 'pi': return new Term({pi: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index + 1), term2.value[2] ]})
         case 'lam': return new Term({lam: [ subst(term1, term2.value[0], ep, index + 1), term2.value[1] ]})
-        case 'app': return new Term({app: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index) ]})
+        case 'app': return new Term({app: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index), term2.value[2] ]})
         case 'boundvar': return index !== term2.value[0] ? term2 : !ep ? term1 : error.tc_erased_var_subst()
         case 'star': case 'freevar': case 'tcon': case 'dcon': return term2
       }
@@ -938,11 +955,12 @@ var Reason = options => {
       return tele.items.reduce((p, item) => p.then(acc => {
         switch (item.ctor) {
           case 'term': case 'erased':
-          let [name, type] = item.value.length === 2 ? item.value :  // TODO: generate wildcards in the parser (boundvars)
-            [ new Name({global: [ctx.fresh()]}), item.value[0] ];
+          // let [name, type] = item.value.length === 2 ? item.value :  // TODO: generate wildcards in the parser (boundvars)
+          //   [ new Name({global: [ctx.fresh()]}), item.value[0] ];
+          let [name, type] = item.value;
           return check(ctx, type, new Value({vstar: []}))
             .then(() => ctx.extend(new Decl({sig: [ name, type = evaluate(type, ctx) ]})))
-            .then(() => acc.concat([new Item({term: [ new Term({freevar: [name]}), type ]})]))
+            .then(() => acc.concat([new Item({[item.ctor]: [ new Term({freevar: [name]}), type ]})]))
 
           case 'constraint':
           return infer(ctx, item.value[0])
@@ -965,24 +983,28 @@ var Reason = options => {
       else error.tc_constraint_cannot_eq()
     }
 
-    function tcArgTele (ctx, terms, tele) { // treat telescope bindings as functions?
-      let rightTele = new Tele(...tele.items), runtimeTerms = [],
+    function tcArgTele (ctx, args, tele) { // treat telescope bindings as functions?
+      let rightTele = new Tele(...tele.items), runtimeArgs = [],
           loop = i => {
             if (rightTele.items.length === 0) return Promise.resolve();
-            let item = rightTele.items[0];
+            let item = rightTele.items[0], arg = args[i];
+            if (['erased', 'term'][arg.value[1]] === item.ctor) throw error.tc_erasure_mismatch();
             switch (item.ctor) {
-              case 'term': case 'erased': return check(ctx, terms[i], item.value[1]).then(() => {
-                rightTele = new Tele(...doSubst(ctx, [[rightTele.items.shift().value[0].value[0], terms[i]]], rightTele));
-                runtimeTerms.push(terms[i])
+              case 'term': return check(ctx, arg.value[0], item.value[1]).then(() => {
+                rightTele = new Tele(...doSubst(ctx, [[rightTele.items.shift().value[0].value[0], arg.value[0]]], rightTele));
+                runtimeArgs.push(arg)
                 return loop(i + 1)
               })
+
+              case 'erased': rightTele.items.splice(0, 1);
+              return loop(i)
 
               case 'constraint':
               if (item.value[0].equal(item.value[1])) return loop(i + 1);
               error.tc_mismatch(...item.value)
             }
           };
-      return loop(0).then(() => runtimeTerms)
+      return loop(0).then(() => runtimeArgs)
     }
 
     function doSubst (ctx, nameTerms, tele) {
@@ -1005,7 +1027,7 @@ var Reason = options => {
         case 'ann': return new Term({ann: [ substFV(term1, term2.value[0], name), substFV(term1, term2.value[1], name) ]})
         case 'pi': return new Term({pi: [ substFV(term1, term2.value[0], name), substFV(term1, term2.value[1], name), term2.value[2] ]})
         case 'lam': return new Term({lam: [ substFV(term1, term2.value[0], name), term2.value[1] ]})
-        case 'app': return new Term({app: [ substFV(term1, term2.value[0], name), substFV(term1, term2.value[1], name) ]})
+        case 'app': return new Term({app: [ substFV(term1, term2.value[0], name), substFV(term1, term2.value[1], name), term2.value[2] ]})
         case 'freevar': return name === term2.value[0] ? term1 : term2
         case 'star': case 'boundvar': case 'tcon': case 'dcon': return term2
       }
@@ -1059,7 +1081,7 @@ var Reason = options => {
 
         case 'data':
         return tcTele(new Context(context), info).then(tele =>
-          ctors.reduce((p, ctor) => p = p.then(acc =>
+          ctors.reduce((p, ctor) => p.then(acc =>
             tcTele(context.cons(new Decl({datasig: [name, tele]})).concatTele(tele), ctor.value[1])
               .then(ctorTele => acc.concat([new Ctor({ctor: [ctor.value[0], ctorTele]})]))
           ), Promise.resolve([])).then(ctors => {
@@ -1067,7 +1089,7 @@ var Reason = options => {
             context.extend(decl);
             return [{decl: 'data', params: tele.tail(), type: tele.items.slice(-1), ctors}]
           })
-        )
+        ).catch(e => {console.log(e); throw e})
 
         case 'recdef': case 'datasig': error.tc_internal()
       }
@@ -1101,52 +1123,52 @@ let Id_, cong;
       catch (e) { console.log(test, e) }
   }
 
-  // functions, lambdas
-  id1 = new R
-    .Sig('id', '(T : Type) -> T -> T')
-    .Def('(t, x => x)');
-
-  // functions with builtins
-  id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
-    { toString () { return this[0].toString() },
-    valueOf () { return this[0].valueOf() } }
-  );
-
-  // types
-  Void = new R.Data('Void', 'Type', []);
-  Unit = new R.Data(
-    'Unit', 'Type', ['TT : Unit'],
-    { fromJS: () => Unit().tt() }
-  );
+  // // functions, lambdas
+  // id1 = new R
+  //   .Sig('id', '(T : Type) -> T -> T')
+  //   .Def('(t, x => x)');
+  //
+  // // functions with builtins
+  // id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
+  //   { toString () { return this[0].toString() },
+  //   valueOf () { return this[0].valueOf() } }
+  // );
+  //
+  // // types
+  // Void = new R.Data('Void', 'Type', []);
+  // Unit = new R.Data(
+  //   'Unit', 'Type', ['TT : Unit'],
+  //   { fromJS: () => Unit().tt() }
+  // );
   Nat_ = new R.Data(
     "Nat'", 'Type',
     [ "Z : Nat'",
       "S : (n:Nat') -> Nat'" ]
   );
-
-  List_ = new R.Data("List'", "(A:Type):Type", [ "Nil:List' A", "Cons:(x:A)(xs:List' A)->List' A" ]);
+  //
+  // List_ = new R.Data("List'", "(A:Type):Type", [ "Nil:List' A", "Cons:(x:A)(xs:List' A)->List' A" ]);
   Vec_ = new R.Data(
     "Vec'", "(A : Type) : Nat' -> Type",
-    [ "Nil : Vec' A (Z)",
+    [ "Nil : Vec' A Z",
       "Cons : {n : Nat'}(x : A)(xs : Vec' A n) -> Vec' A (S n)" ]
   );
-
-  Fin_ = new R.Data(
-    "Fin'", "(n:Nat') : Type",
-    [ "Zero:{n:Nat'}->Fin'(S n)",
-      "Succ:{n:Nat'}(i:Fin' n)->Fin'(S n)" ]
-  );
-
-  Sigma_ = new R.Data(
-    "Sigma'", "(A:Type)(B:A->Type):Type",
-    [ "DProd:(x:A)(y:B x)->Sigma' A B" ]
-  )
-
-  // proof example
-  Id_ = new R.Data(
-    "Id'", "{A : Type}(x : A) : A -> Type",
-    [ "Refl : {x : A} -> Id' {A} x x" ]
-  )
+  //
+  // Fin_ = new R.Data(
+  //   "Fin'", "(n:Nat') : Type",
+  //   [ "Zero:{n:Nat'}->Fin'(S n)",
+  //     "Succ:{n:Nat'}(i:Fin' n)->Fin'(S n)" ]
+  // );
+  //
+  // Sigma_ = new R.Data(
+  //   "Sigma'", "(A:Type)(B:A->Type):Type",
+  //   [ "DProd:(x:A)(y:B x)->Sigma' A B" ]
+  // )
+  //
+  // // proof example
+  // Id_ = new R.Data(
+  //   "Id'", "{A : Type}(x : A) : A -> Type",
+  //   [ "Refl : {x : A} -> Id' x x" ]
+  // )
   // cong = new R
   //   .Sig("cong", "{a b : Type}{x, y : a} -> (f : a -> b) -> Id' x y -> Id' (f x) (f y)")
   //   .Def("@ f Refl := Refl")
