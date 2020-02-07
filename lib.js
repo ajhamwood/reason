@@ -1,4 +1,5 @@
-var R = (() => {
+var Reason = options => {
+  let { showDebug } = options;
 
   // Utilities
 
@@ -14,7 +15,11 @@ var R = (() => {
               unchecked: () => 'Interpreter error: not yet typechecked',
 
               // Lexer errors
-              lexer: (err, col, info) => `Lexer error: ${err}\nat ${col}\n${info}`,
+              lexer_unexpected: (char, match, pos) => `Lexer error: unexpected character${char ? ' ' + char : ''}${
+                match ? ', looking for ' + match : ''} at position ${pos}`,
+              lexer_missing: (match, pos) => `Lexer error: missing expected char ${match} at position ${pos}`,
+              lexer_uncl_str: pos => 'Lexer error: unclosed string at position ' + pos,
+              lexer_digits: pos => `Lexer error: expected digits at position ${pos}`,
 
               // AST errors
               internal_ctor_args: () => 'AST error: Wrong number of constructor arguments',
@@ -44,10 +49,11 @@ var R = (() => {
               tc_erasure_mismatch: () => 'Type error: erasure mismatch',
               tc_constraint_cannot_eq: (lhs, rhs) => `Cannot equate lhs and rhs of constraint ${lhs.toString()} = ${rhs.toString()}`,
               tc_internal: () => 'Type error: internal construct',
-              tc_internal_subst: () => 'Internal error: substTele given illegal arguments'
+
+              // Internal error
+              internal_arg: fname => `Type error: internal function ${fname} given illegal arguments`
             })[prop] || (() => prop))(...args)) }
           } });
-  let showDebug = false;
   function triggerProxyPromise () {
     let px = (obj, args) => new Proxy(new obj(...args), { get (p, prop) {
       if (prop === 'catch') return cb => p.catch(err => {
@@ -172,10 +178,10 @@ var R = (() => {
           snip();
           make({id: char, value: 'string'})
         }
-        else if (char === '') error.lexer('Unclosed string', pos);
+        else if (char === '') error.lexer_uncl_str(pos);
         else if (char === '\\') {
           nextchar('\\');
-          if (char === '') error.lexer('Unclosed string', pos);
+          if (char === '') error.lexer_uncl_str(pos);
           else if (char === '"') nextchar()
         }
         else nextchar();
@@ -184,9 +190,9 @@ var R = (() => {
     }
     function snip () { word = word.slice(0, -1) } // from end
     function nextchar (match) {
-      if (match && match !== char) error.lexer(char ?
-        `Unexpected char ${char}, looking for ${match}` :
-        `Missing expected char ${match}`, pos - 1);
+      if (match && match !== char) char ?
+        error.lexer_unexpected(char, match, pos - 1) :
+        error.lexer_missing(match, pos - 1);
       if (sourceString) {
         word += (char = sourceString[0]);
         sourceString = sourceString.slice(1)
@@ -217,7 +223,7 @@ var R = (() => {
         nextchar();
         frack()
       }
-      if (/[0-9a-zA-Z]/.test(char)) error.lexer(`Unexpected character ${char} after number`, col - 1);
+      if (/[0-9a-zA-Z]/.test(char)) error.lexer_unexpected(char, null, col);
       backchar();
       return make({id: word, value: 'num'})
     }
@@ -240,7 +246,7 @@ var R = (() => {
         pos += char.length;
         sourceString = result[2];
         word += char
-      } else return error.lexer('Expected digits', col)
+      } else return error.lexer_digits(col)
     }
 
     return (function lex () {
@@ -250,7 +256,7 @@ var R = (() => {
         return tokens;
       }
       result = sourceString.match(rx_token);
-      if (!result) error.lexer('Unexpected character', pos, sourceString[0]);
+      if (!result) error.lexer_unexpected(sourceString[0], null, pos);
       word = result[1];
       pos += word.length;
       sourceString = result[7];
@@ -327,7 +333,7 @@ var R = (() => {
       }
     }
   }
-  class Tele { // TODO: meaningfully distinguish params/indices
+  class Tele {
     items = []
     length = 0
     constructor (...items) {
@@ -429,8 +435,8 @@ var R = (() => {
           throw err
         })
       }
-      function debugGroup (msg, fn) {
-        return alt(() => {
+      function altMsg (msg, fn) {
+        return alt(!showDebug ? fn : () => {
           console.group(msg);
           return fn().then(result => {
             console.groupEnd();
@@ -441,7 +447,6 @@ var R = (() => {
           })
         })
       }
-      function altMsg (msg, fn) { return (showDebug ? dfn => debugGroup(msg, dfn) : alt)(fn) }
 
       function parseStatement (env, all) {
         function endTest (decls) {
@@ -481,9 +486,6 @@ var R = (() => {
 
             case 'ddef': return altNames(function () {
               // name bindings : type
-              // For now, only allow tcon indexes of type Type, until I can
-              // compare Idris or Agda with the constraint solver in pi-forall
-              // for how to implement dependent type families
               advance('Type/record definition?', {value: 'name'});
               let name = token;
               this.tnames.push(name.id);
@@ -524,21 +526,23 @@ var R = (() => {
       function enclosure (glyphs, fn) {
         if (level > 20) error.parser_nesting();
         let gly;
-        return glyphs.reduce((p, glyph) => p = p.catch(() => alt(() => {
+        return glyphs.reduce((p, glyph) => p.catch(() => alt(() => {
           let [open, close] = ({ parens: ['(', ')'], braces: ['{', '}'] })[gly = glyph]
           advance(`Open ${gly}?`, {value: 'punc', id: open});
           debug('enclosure_open');
           level++;
           return fn().then(result => {
             advance(`Close ${gly}?`, {value: 'punc', id: close});
-            debug('group_end');
-            level--;
             return result
-          }).catch(err => {
-            debug('group_end');
-            level--;
-            throw err
           })
+        }).then(result => {
+          debug('group_end');
+          level--;
+          return result
+        }).catch(err => {
+          debug('group_end');
+          level--;
+          throw err
         })), Promise.reject()).then(result => glyphs.length > 1 ? [result, gly] : result)
       }
 
@@ -771,6 +775,8 @@ var R = (() => {
   const context = new Context();
 
   function typecheck (decls) {
+    // triggerProxyPromise()
+
     // Infer/check
     function infer (ctx, term, index = 0) { //context, term, number -> value
       return Promise.resolve().then(() => {
@@ -787,7 +793,7 @@ var R = (() => {
               if (type1.ctor !== 'vstar') error.tc_pi_mismatch('domain', quote(type1));
               return infer(
                 ctx.cons(new Decl({sig: [ local, evaluate(term.value[0], ctx) ]})),
-                subst(new Term({freevar: [ local ]}), term.value[1], term.value[2]), index + 1)
+                subst(new Term({freevar: [ local ]}), term.value[1], false), index + 1)
                 .then(type2 => {
                   if (type2.ctor !== 'vstar') error.tc_pi_mismatch('range', quote(type2));
                   return vstar
@@ -1009,7 +1015,7 @@ var R = (() => {
       return doSubst(ctx, tele1.items.map((item, i) => {
         switch (item.ctor) {
           case 'term': return [item.value[0].value[0], terms[i]];
-          default: error.tc_internal_subst()
+          default: error.internal_arg('substTele')
         }
       }), tele2)
     }
@@ -1078,50 +1084,70 @@ var R = (() => {
   Object.defineProperty(R, 'ready', { get () { return sequence(() => new Promise(r => setTimeout(r, 0))) } });
 
   return R
-})();
+};
 
 
 
 
 // Testing
 
-let id1, id2, Unit, Nat_, Vec_;
+const R = Reason({showDebug: false});
+
+let id1, id2, Void, Unit, Nat_, Vec_, Fin_, Sigma_;
+let Id_, cong;
 (async () => {
   let passFail = obj => {
     for (let test in obj) try { console.log(obj[test]()) }
       catch (e) { console.log(test, e) }
   }
 
-  // // functions, lambdas
-  // id1 = new R
-  //   .Sig('id', '(T : Type) -> T -> T')
-  //   .Def('(t, x => x)');
-  //
-  // // functions with builtins
-  // id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
-  //   { toString () { return this[0].toString() },
-  //   valueOf () { return this[0].valueOf() } }
-  // );
-  // await R.ready;
-  // console.log(id1, id2)
+  // functions, lambdas
+  id1 = new R
+    .Sig('id', '(T : Type) -> T -> T')
+    .Def('(t, x => x)');
 
-  // // types
-  // Unit = new R.Data(
-  //   'Unit', 'Type', ['TT : Unit'],
-  //   { fromJS: () => Unit().tt() }
-  // );
+  // functions with builtins
+  id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
+    { toString () { return this[0].toString() },
+    valueOf () { return this[0].valueOf() } }
+  );
+
+  // types
+  Void = new R.Data('Void', 'Type', []);
+  Unit = new R.Data(
+    'Unit', 'Type', ['TT : Unit'],
+    { fromJS: () => Unit().tt() }
+  );
   Nat_ = new R.Data(
     "Nat'", 'Type',
     [ "Z : Nat'",
       "S : (n:Nat') -> Nat'" ]
   );
-  await R.ready;
 
-  // List_ = new R.Data("List'", "(A:Type):Type", [ "Nil:List' A", "Cons:(x:A)(xs:List' A)->List' A" ]);
-  //
-  Vec_ = new R.Data("Vec'", "(A : Type) : Nat' -> Type",
+  List_ = new R.Data("List'", "(A:Type):Type", [ "Nil:List' A", "Cons:(x:A)(xs:List' A)->List' A" ]);
+  Vec_ = new R.Data(
+    "Vec'", "(A : Type) : Nat' -> Type",
     [ "Nil : Vec' A (Z)",
       "Cons : {n : Nat'}(x : A)(xs : Vec' A n) -> Vec' A (S n)" ]
   );
-  await R.ready;
+
+  Fin_ = new R.Data(
+    "Fin'", "(n:Nat') : Type",
+    [ "Zero:{n:Nat'}->Fin'(S n)",
+      "Succ:{n:Nat'}(i:Fin' n)->Fin'(S n)" ]
+  );
+
+  Sigma_ = new R.Data(
+    "Sigma'", "(A:Type)(B:A->Type):Type",
+    [ "DProd:(x:A)(y:B x)->Sigma' A B" ]
+  )
+
+  // proof example
+  Id_ = new R.Data(
+    "Id'", "{A : Type}(x : A) : A -> Type",
+    [ "Refl : {x : A} -> Id' {A} x x" ]
+  )
+  // cong = new R
+  //   .Sig("cong", "{a b : Type}{x, y : a} -> (f : a -> b) -> Id' x y -> Id' (f x) (f y)")
+  //   .Def("@ f Refl := Refl")
 })()
