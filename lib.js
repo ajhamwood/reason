@@ -729,8 +729,7 @@ var Reason = options => {
             return tele
           })).catch(() => ({boundvars: [], types: [], epsilons: []}))
             .then(({boundvars, types, epsilons}) => inferrableTerm(env, 'pi').then(typeFam =>
-              types.reduceRight((acc, ty, i) => acc[epsilons[i] ? 'erased' : 'term'](new Name({global: [boundvars[i].id]}), ty), new Tele())
-                .term(typeFam, new Term({star: []}))
+              types.reduceRight((acc, ty, i) => acc[epsilons[i] ? 'erased' : 'term'](new Name({global: [boundvars[i].id]}), ty), new Tele()).term(typeFam)
             ))
         )
       }
@@ -811,7 +810,6 @@ var Reason = options => {
             })
 
           case 'app':
-          console.log('app', term)
           return infer(ctx, term.value[0], index)
             .then(type => {
               if (type.ctor !== 'vpi') error.tc_app_mismatch(quote(type));
@@ -827,7 +825,6 @@ var Reason = options => {
           case 'tcon':
           if (term.value.length === 1) term.value.push([]) //?
           result = ctx.lookup(term.value[0], 'data');
-          console.log('tcon', result.items, term.value[1].slice())
           if (result.length - 1 > term.value[1].length) error.tc_dcon_arg_len(term.value[1].length, result.length - 1);
           else if (result.length - 1 < term.value[1].length)
             return infer(ctx, term.value[1].slice(result.length - 1).reduce((acc, tm) => new Term({app: [acc, tm, false]}),
@@ -857,7 +854,6 @@ var Reason = options => {
         switch (term.ctor) {
           case 'lam':
           if (typeVal.ctor !== 'vpi') error.tc_lam_mismatch(typeVal.ctor);
-          // if erasedpi then add constraint to context?
           if (term.value[1] !== typeVal.value[2]) error.tc_erasure_mismatch();
           else {
             let local = new Name({local: [index]});
@@ -955,9 +951,9 @@ var Reason = options => {
       return tele.items.reduce((p, item) => p.then(acc => {
         switch (item.ctor) {
           case 'term': case 'erased':
-          // let [name, type] = item.value.length === 2 ? item.value :  // TODO: generate wildcards in the parser (boundvars)
-          //   [ new Name({global: [ctx.fresh()]}), item.value[0] ];
-          let [name, type] = item.value;
+          let [name, type] = item.value.length === 2 ? item.value :  // TODO: generate wildcards in the parser (boundvars)
+            [ new Name({global: [ctx.fresh()]}), item.value[0] ];
+          // let [name, type] = item.value;
           return check(ctx, type, new Value({vstar: []}))
             .then(() => ctx.extend(new Decl({sig: [ name, type = evaluate(type, ctx) ]})))
             .then(() => acc.concat([new Item({[item.ctor]: [ new Term({freevar: [name]}), type ]})]))
@@ -1123,23 +1119,23 @@ let Id_, cong;
       catch (e) { console.log(test, e) }
   }
 
-  // // functions, lambdas
-  // id1 = new R
-  //   .Sig('id', '(T : Type) -> T -> T')
-  //   .Def('(t, x => x)');
-  //
-  // // functions with builtins
-  // id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
-  //   { toString () { return this[0].toString() },
-  //   valueOf () { return this[0].valueOf() } }
-  // );
-  //
-  // // types
-  // Void = new R.Data('Void', 'Type', []);
-  // Unit = new R.Data(
-  //   'Unit', 'Type', ['TT : Unit'],
-  //   { fromJS: () => Unit().tt() }
-  // );
+  // functions, lambdas
+  id1 = new R
+    .Sig('id', '(T : Type) -> T -> T')
+    .Def('(t, x => x)');
+
+  // functions with builtins
+  id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
+    { toString () { return this[0].toString() },
+    valueOf () { return this[0].valueOf() } }
+  );
+
+  // types
+  Void = new R.Data('Void', 'Type', []);
+  Unit = new R.Data(
+    'Unit', 'Type', ['TT : Unit'],
+    { fromJS: () => Unit().tt() }
+  );
   Nat_ = new R.Data(
     "Nat'", 'Type',
     [ "Z : Nat'",
@@ -1152,23 +1148,23 @@ let Id_, cong;
     [ "Nil : Vec' A Z",
       "Cons : {n : Nat'}(x : A)(xs : Vec' A n) -> Vec' A (S n)" ]
   );
-  //
-  // Fin_ = new R.Data(
-  //   "Fin'", "(n:Nat') : Type",
-  //   [ "Zero:{n:Nat'}->Fin'(S n)",
-  //     "Succ:{n:Nat'}(i:Fin' n)->Fin'(S n)" ]
-  // );
-  //
-  // Sigma_ = new R.Data(
-  //   "Sigma'", "(A:Type)(B:A->Type):Type",
-  //   [ "DProd:(x:A)(y:B x)->Sigma' A B" ]
-  // )
-  //
-  // // proof example
-  // Id_ = new R.Data(
-  //   "Id'", "{A : Type}(x : A) : A -> Type",
-  //   [ "Refl : {x : A} -> Id' x x" ]
-  // )
+
+  Fin_ = new R.Data(
+    "Fin'", "(n:Nat') : Type",
+    [ "Zero:{n:Nat'}->Fin'(S n)",
+      "Succ:{n:Nat'}(i:Fin' n)->Fin'(S n)" ]
+  );
+
+  Sigma_ = new R.Data(
+    "Sigma'", "(A:Type)(B:A->Type):Type",
+    [ "DProd:(x:A)(y:B x)->Sigma' A B" ]
+  )
+
+  // proof example
+  Id_ = new R.Data(
+    "Id'", "{A : Type}(x : A) : A -> Type",
+    [ "Refl : {x : A} -> Id' x x" ]
+  )
   // cong = new R
   //   .Sig("cong", "{a b : Type}{x, y : a} -> (f : a -> b) -> Id' x y -> Id' (f x) (f y)")
   //   .Def("@ f Refl := Refl")
