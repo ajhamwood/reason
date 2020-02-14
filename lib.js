@@ -890,7 +890,8 @@ var Reason = options => {
 
   // Pretty printer
 
-  function print (term, int1 = 0, int2 = 0) {
+  function print (obj, int1 = 0, int2 = 0) {
+    function testObj (klass) { return klass.prototype.isPrototypeOf(obj) }
     function vars (i) { return 'xyzwvutsrqponmlkjihgfedcba'.split('')[i % 26].repeat(Math.ceil(++i / 26)) }
     function parensIf (bool, string) { return bool ? `(${string})` : string }
     function nestedLambda (body, index) { return body.ctor === 'lam' ?
@@ -899,30 +900,45 @@ var Reason = options => {
     function nestedPi (range, domain, index) { return domain.ctor === 'pi' ?
       nestedPi([[domain.value[0], index]].concat(range), domain.value[1], index + 1) :
       range.reverse().map(([tm, i]) => parensIf(true, vars(i) + ' : ' + print(tm, 1, i))).join('') + ' -> ' + print(domain, 0, index) }
-    function printPat (pat, int1 = 0, int2 = 0) { switch (pat.ctor) {
-      case 'patvar': return pat.value[0].value[0]
-      case 'patdcon': return parensIf(int1 > 1, pat.value[0].value[0] +
-        pat.value[1].map(arg => ' ' + (arg.value[1] ? `{${printPat(arg.value[0], 1, int2)}}` : printPat(arg.value[0], 1, int2))))
-    } }
-
-    switch (term.ctor) {
-      case 'star': return 'Type'
-      case 'ann': return parensIf(int1 > 1, print(term.value[0], 2, int2) + ' : ' + print(term.value[1], 0, int2))
-      case 'pi': return term.value[1].ctor === 'pi' ?
-        parensIf(int1 > 1, nestedPi([[term.value[1].value[0], int2 + 1], [term.value[0], int2]], term.value[1].value[1], int2 + 2)) :
-        parensIf(true, vars(int2) + ' : ' + print(term.value[0], 0, int2) + ' -> ' + print(term.value[1], 0, int2 + 1))
-      case 'lam': return parensIf(int1 > 0, term.value[0].ctor === 'lam' ?
-         nestedLambda(term.value[0].value[0], int2 + 2) :
-         vars(int2) + ' => ' + print(term.value[0], 0, int2 + 1))
-      case 'app': return parensIf(int1 > 1, print(term.value[0], 2, int2) + ' ' + print(term.value[1], 3, int2))
-      case 'boundvar': return vars(int2 - term.value[0] - 1)
-      case 'freevar': return term.value[0].value[0]
-      case 'tcon': return parensIf(int1 > 1, term.value[0].value[0] + term.value[1].map(tm => ' ' + print(tm, 1, int2)))
-      case 'dcon': return parensIf(int1 > 1, term.value[0].value[0] +
-        term.value[1].map(arg => ' ' + (arg.value[1] ? `{${print(arg.value[0], 1, int2)}}` : print(arg.value[0], 1, int2))))
-      case 'case': return print(term.value[0], 0, int2) + ' |' +
-        term.value[1].map(match => '\n  ' + printPat(match.value[0]) + ' := ' + print(match.value[1], 0, int2))
-    }
+    if (testObj(Term)) {
+      switch (obj.ctor) {
+        case 'star': return 'Type'
+        case 'ann': return parensIf(int1 > 1, print(obj.value[0], 2, int2) + ' : ' + print(obj.value[1], 0, int2))
+        case 'pi': return obj.value[1].ctor === 'pi' ?
+        parensIf(int1 > 1, nestedPi([[obj.value[1].value[0], int2 + 1], [obj.value[0], int2]], obj.value[1].value[1], int2 + 2)) :
+        parensIf(true, vars(int2) + ' : ' + print(obj.value[0], 0, int2) + ' -> ' + print(obj.value[1], 0, int2 + 1))
+        case 'lam': return parensIf(int1 > 0, obj.value[0].ctor === 'lam' ?
+        nestedLambda(obj.value[0].value[0], int2 + 2) :
+        vars(int2) + ' => ' + print(obj.value[0], 0, int2 + 1))
+        case 'app': return parensIf(int1 > 1, print(obj.value[0], 1, int2) + ' ' + print(obj.value[1], 3, int2))
+        case 'boundvar': return vars(int2 - obj.value[0] - 1)
+        case 'freevar': return print(obj.value[0])
+        case 'tcon': return parensIf(int1 > 2, print(obj.value[0]) + obj.value[1].map(tm => ' ' + print(tm, 3, int2)).join(''))
+        case 'dcon': return parensIf(int1 > 2 + !obj.value[1].length, print(obj.value[0]) +
+          obj.value[1].map(arg => ' ' + (arg.value[1] ? `{${print(arg.value[0], 2, int2)}}` : print(arg.value[0], 2, int2))))
+        case 'case': return print(obj.value[0], 0, int2) + ' |' +
+          obj.value[1].map(match => '\n  ' + print(match.value[0]) + ' := ' + print(match.value[1], 0, int2))
+        }
+    } else if (testObj(Name)) {
+      switch (obj.ctor) {
+        case 'global': return obj.value[0]
+        case 'local': return typeof (obj.value[0]) === 'number' ? vars(obj.value[0]) : obj.value[0]
+      }
+    } else if (testObj(Pat)) {
+      switch (obj.ctor) {
+        case 'patvar': return print(obj.value[0])
+        case 'patdcon': return parensIf(int1 > 1, print(obj.value[0]) +
+          obj.value[1].map(arg => ' ' + (arg.value[1] ? `{${print(arg.value[0], 1, int2)}}` : print(arg.value[0], 1, int2))))
+      }
+    } else if (testObj(Tele)) {
+      return obj.items.slice(0, -1).map(item => {
+        switch (item.ctor) {
+          case 'term': return `(${print(item.value[0]) + ' : ' + print(item.value[1])})`
+          case 'erased': return `{${print(item.value[0]) + ' : ' + print(item.value[1])}}`
+          case 'constraint': return `{${print(item.value[0]) + ' = ' + print(item.value[1])}}`
+        }
+      }).join('') + (obj.items.length - 1 ? ' -> ' : '') + print(obj.items.slice(-1)[0].value[1], 1, int2)
+    } else if (testObj(Ctor)) { return print(obj.value[0]) + ' : ' + print(obj.value[1]) }
   }
 
 
@@ -1481,9 +1497,10 @@ var Reason = options => {
           let mbType = context.lookup(name, 'sig'), args;
           return (typeof mbType === 'undefined') ?
             infer(args = {ctx: context, term: info}).then(type => {
-              console.log(name.value[0], ':', print(args.term));
+              console.log(name.value[0], ':', print(type));
+              console.log(name.value[0], ':=', print(args.term));
               value = evaluate(args.term, context);
-              context.extend(new Decl(({sig: [name, type]}))).extend(new Decl({def: [name, value]}));
+              context.extend([new Decl(({sig: [name, type]})), new Decl({def: [name, value]})]);
               return acc.concat([{declName: 'def', type, value, term: args.term}])
             }) :
             check(context, info, mbType).then(({term, type}) => {
@@ -1500,6 +1517,10 @@ var Reason = options => {
             tcTele(context.cons(new Decl({datasig: [name, tele]})).concatTele(tele), ctor.value[1])
               .then(ctorTele => acc.concat([new Ctor({ctor: [ctor.value[0], ctorTele]})]))
           ), Promise.resolve([])).then(ctors => {
+            let quoteTele = tl => new Tele(...tl.items.map(item =>
+              new Item({[item.ctor]: [ item.ctor === 'constraint' ? quote(item.value[0]) : item.value[0], quote(item.value[1]) ]})));
+            console.log(name.value[0], ':', print(quoteTele(tele)) +
+              ctors.map(ctor => '\n  ' + print(new Ctor({ctor: [ ctor.value[0], quoteTele(ctor.value[1]) ]}))).join(''));
             let decl = new Decl({data: [name, tele, ctors]});
             context.extend(decl);
             return [{declName: 'data', params: tele.tail(), type: tele.items.slice(-1), ctors}]
@@ -1540,23 +1561,23 @@ let Id_, cong, Leq_;
       catch (e) { console.log(test, e) }
   }
 
-  // // functions, lambdas
-  // id1 = new R
-  //   .Sig('id', '(T : Type) -> T -> T')
-  //   .Def('(t, x => x)');
-  //
-  // // functions with builtins
-  // id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
-  //   { toString () { return this[0].toString() },
-  //   valueOf () { return this[0].valueOf() } }
-  // );
-  //
-  // // types
-  // Void = new R.Data('Void', 'Type', []);
-  // Unit = new R.Data(
-  //   'Unit', 'Type', ['TT : Unit'],
-  //   { fromJS: () => Unit().tt() }
-  // );
+  // functions, lambdas
+  id1 = new R
+    .Sig('id', '(T : Type) -> T -> T')
+    .Def('(t, x => x)');
+
+  // functions with builtins
+  id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
+    { toString () { return this[0].toString() },
+    valueOf () { return this[0].valueOf() } }
+  );
+
+  // types
+  Void = new R.Data('Void', 'Type', []);
+  Unit = new R.Data(
+    'Unit', 'Type', ['TT : Unit'],
+    { fromJS: () => Unit().tt() }
+  );
 
   Nat_ = new R.Data(
     "Nat'", 'Type',
@@ -1564,23 +1585,23 @@ let Id_, cong, Leq_;
       "S : (n:Nat') -> Nat'" ]
   );
 
-  // List_ = new R.Data("List'", "(A:Type):Type", [ "Nil:List' A", "Cons:(x:A)(xs:List' A)->List' A" ]);
-  // Vec_ = new R.Data(
-  //   "Vec'", "(A : Type) : Nat' -> Type",
-  //   [ "Nil : Vec' A Z",
-  //     "Cons : {n : Nat'}(x : A)(xs : Vec' A n) -> Vec' A (S n)" ]
-  // );
-  //
-  // Fin_ = new R.Data(
-  //   "Fin'", "(n:Nat') : Type",
-  //   [ "Zero:{n:Nat'}->Fin'(S n)",
-  //     "Succ:{n:Nat'}(i:Fin' n)->Fin'(S n)" ]
-  // );
-  //
-  // Sigma_ = new R.Data(
-  //   "Sigma'", "(A:Type)(B:A->Type):Type",
-  //   [ "DProd:(x:A)(y:B x)->Sigma' A B" ]
-  // )
+  List_ = new R.Data("List'", "(A:Type):Type", [ "Nil:List' A", "Cons:(x:A)(xs:List' A)->List' A" ]);
+  Vec_ = new R.Data(
+    "Vec'", "(A : Type) : Nat' -> Type",
+    [ "Nil : Vec' A Z",
+      "Cons : {n : Nat'}(x : A)(xs : Vec' A n) -> Vec' A (S n)" ]
+  );
+
+  Fin_ = new R.Data(
+    "Fin'", "(n:Nat') : Type",
+    [ "Zero:{n:Nat'}->Fin'(S n)",
+      "Succ:{n:Nat'}(i:Fin' n)->Fin'(S n)" ]
+  );
+
+  Sigma_ = new R.Data(
+    "Sigma'", "(A:Type)(B:A->Type):Type",
+    [ "DProd:(x:A)(y:B x)->Sigma' A B" ]
+  )
 
   // pattern matching
   plus = new R
@@ -1595,11 +1616,11 @@ let Id_, cong, Leq_;
         "S m := S (plus m y)" ]
     });
 
-  one_plus_one = new R.Sig(
-    "one_plus_one", "Nat'"
-  ).Def(
-    "plus (S Z) (S Z)"
-  );
+  // one_plus_one = new R.Sig(
+  //   "one_plus_one", "Nat'"
+  // ).Def(
+  //   "plus (S Z) (S Z)"
+  // );
   // half = new R.Sig(
   //   "half", "Nat' -> Nat'"
   // ).Def({
@@ -1608,7 +1629,7 @@ let Id_, cong, Leq_;
   //     "S  Z    := Z",
   //     "S (S m) := S (half m)" ]
   // })
-  //
+
   // tail = new R.Sig(
   //   "tail", "{A : Type}{m : Nat'} -> Vec' A (S m) -> Vec' A m"
   // ).Def({
@@ -1630,9 +1651,9 @@ let Id_, cong, Leq_;
   //   .Sig("cong", "{a b : Type}{x, y : a} -> (f : a -> b) -> Id' x y -> Id' (f x) (f y)")
   //   .Def("@ f Refl := Refl")
 
-  // Leq_ = new R.Data(
-  //   "Leq'", "Nat' -> Nat' -> Type",
-  //   [ "lz : (n : Nat') -> Leq' (Z) n", // TODO: all right identifiers parse as arguments, including tnames and dnames
-  //     "ls : (m n : Nat') (p : Leq' m n) -> Leq' (S m) (S n)" ]
-  // )
+  Leq_ = new R.Data(
+    "Leq'", "Nat' -> Nat' -> Type",
+    [ "lz : (n : Nat') -> Leq' (Z) n", // TODO: all right identifiers parse as arguments, including tnames and dnames
+      "ls : (m n : Nat') (p : Leq' m n) -> Leq' (S m) (S n)" ]
+  )
 })()
