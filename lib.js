@@ -34,12 +34,12 @@ var Reason = options => {
               parser_notvalid: which => `Parser error: not a valid ${which}`,
 
               // Typechecking errors
-              tc_mismatch: (tested, given) => `Type error: mismatch at\n    ${tested.toString()}\nexpecting\n    ${given.toString()}`, // TODO: pretty print
+              tc_mismatch: (tested, given) => `Type error: mismatch at\n    ${print(tested)}\nexpecting\n    ${print(given)}`,
               tc_lam_mismatch: ctor => `Type error: lambda has Pi type, not ${ctor}`,
               tc_lam_infer: () => 'Type error: cannot infer type of lambda',
-              tc_ann_mismatch: tested => `Type error: annotation should have type Type, found ${tested.toString()}`,
-              tc_pi_mismatch: (loc, tested) => `Type error: Pi ${loc} should have type Type, found ${tested.toString()}`,
-              tc_app_mismatch: tested => `Type error: illegal application - expected type Pi, found ${tested.toString()}`,
+              tc_ann_mismatch: tested => `Type error: annotation should have type Type, found ${print(tested)}`,
+              tc_pi_mismatch: (loc, tested) => `Type error: Pi ${loc} should have type Type, found ${print(tested)}`,
+              tc_app_mismatch: tested => `Type error: illegal application - expected type Pi, found ${print(tested)}`,
               tc_bad_app: () => 'Type error: bad value application',
               tc_unknown_id: name => `Type error: unknown identifier ${name.value[0]}`,
               tc_dcon_ambiguity: () => 'Type error: ambiguous data constructor',
@@ -49,7 +49,7 @@ var Reason = options => {
 
               tc_erased_var_subst: () => 'Type error: erased variable used in lambda',
               tc_erasure_mismatch: () => 'Type error: erasure mismatch',
-              tc_constraint_cannot_eq: (lhs, rhs) => `Cannot equate lhs and rhs of constraint ${lhs.toString()} = ${rhs.toString()}`,
+              tc_constraint_cannot_eq: (lhs, rhs) => `Cannot equate lhs and rhs of constraint ${print(lhs)} = ${print(rhs)}`,
 
               tc_erased_pat: () => 'Type error: cannot pattern match erased arguments',
               tc_pat_dcon_len: dir => `Type error: ${dir ? 'too many' : 'not enough'} patterns in match for data constructor`,
@@ -888,6 +888,46 @@ var Reason = options => {
 
 
 
+  // Pretty printer
+
+  function print (term, int1 = 0, int2 = 0) {
+    function vars (i) { return 'xyzwvutsrqponmlkjihgfedcba'.split('')[i % 26].repeat(Math.ceil(++i / 26)) }
+    function parensIf (bool, string) { return bool ? `(${string})` : string }
+    function nestedLambda (body, index) { return body.ctor === 'lam' ?
+      nestedLambda(body.value[0], index + 1) :
+      Array.from(Array(index), (_, i) => vars(i)).join(', ') + ' => ' + print(body, 0, index) }
+    function nestedPi (range, domain, index) { return domain.ctor === 'pi' ?
+      nestedPi([[domain.value[0], index]].concat(range), domain.value[1], index + 1) :
+      range.reverse().map(([tm, i]) => parensIf(true, vars(i) + ' : ' + print(tm, 1, i))).join('') + ' -> ' + print(domain, 0, index) }
+    function printPat (pat, int1 = 0, int2 = 0) { switch (pat.ctor) {
+      case 'patvar': return pat.value[0].value[0]
+      case 'patdcon': return parensIf(int1 > 1, pat.value[0].value[0] +
+        pat.value[1].map(arg => ' ' + (arg.value[1] ? `{${printPat(arg.value[0], 1, int2)}}` : printPat(arg.value[0], 1, int2))))
+    } }
+
+    switch (term.ctor) {
+      case 'star': return 'Type'
+      case 'ann': return parensIf(int1 > 1, print(term.value[0], 2, int2) + ' : ' + print(term.value[1], 0, int2))
+      case 'pi': return term.value[1].ctor === 'pi' ?
+        parensIf(int1 > 1, nestedPi([[term.value[1].value[0], int2 + 1], [term.value[0], int2]], term.value[1].value[1], int2 + 2)) :
+        parensIf(true, vars(int2) + ' : ' + print(term.value[0], 0, int2) + ' -> ' + print(term.value[1], 0, int2 + 1))
+      case 'lam': return parensIf(int1 > 0, term.value[0].ctor === 'lam' ?
+         nestedLambda(term.value[0].value[0], int2 + 2) :
+         vars(int2) + ' => ' + print(term.value[0], 0, int2 + 1))
+      case 'app': return parensIf(int1 > 1, print(term.value[0], 2, int2) + ' ' + print(term.value[1], 3, int2))
+      case 'boundvar': return vars(int2 - term.value[0] - 1)
+      case 'freevar': return term.value[0].value[0]
+      case 'tcon': return parensIf(int1 > 1, term.value[0].value[0] + term.value[1].map(tm => ' ' + print(tm, 1, int2)))
+      case 'dcon': return parensIf(int1 > 1, term.value[0].value[0] +
+        term.value[1].map(arg => ' ' + (arg.value[1] ? `{${print(arg.value[0], 1, int2)}}` : print(arg.value[0], 1, int2))))
+      case 'case': return print(term.value[0], 0, int2) + ' |' +
+        term.value[1].map(match => '\n  ' + printPat(match.value[0]) + ' := ' + print(match.value[1], 0, int2))
+    }
+  }
+
+
+
+
   // Typechecking
 
   class Context {
@@ -1417,7 +1457,6 @@ var Reason = options => {
 
     // Main typecheck
     return decls.reduce((p, decl) => p.then(acc => {
-      console.log(decl.toString());
       let [name, info, ctors] = decl.value, mbValue, value;
       switch (decl.ctor) {
         case 'sig':
@@ -1427,6 +1466,7 @@ var Reason = options => {
           if (info.equal(quote(mbValue))) return acc.concat([{declName: 'sig', type: typeVal, value: mbValue, term: info}]);
           else error.duplicate(name);
         } else return check(context, info, typeVal).then(({term, type}) => {
+          console.log(name.value[0], ':', print(term));
           let value = evaluate(term, context);
           context.extend(new Decl({sig: [ name, value ]}));
           return acc.concat([{declName: 'sig', type, value, term: info}])
@@ -1441,11 +1481,13 @@ var Reason = options => {
           let mbType = context.lookup(name, 'sig'), args;
           return (typeof mbType === 'undefined') ?
             infer(args = {ctx: context, term: info}).then(type => {
+              console.log(name.value[0], ':', print(args.term));
               value = evaluate(args.term, context);
               context.extend(new Decl(({sig: [name, type]}))).extend(new Decl({def: [name, value]}));
               return acc.concat([{declName: 'def', type, value, term: args.term}])
             }) :
             check(context, info, mbType).then(({term, type}) => {
+              console.log(name.value[0], ':=', print(term));
               value = evaluate(term, context);
               context.extend(new Decl({def: [name, value]}));
               return acc.concat([{declName: 'def', type, value, term}])
