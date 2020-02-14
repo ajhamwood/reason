@@ -1014,7 +1014,7 @@ var Reason = options => {
               ctx.cons(new Decl({sig: [ local, typeVal.value[0] ]})),
               subst(new Term({freevar: [ local ]}), ...term.value),
               typeVal.value[1](vfree(local)), index + 1)
-              .then(({term}) => ({term: new Term({lam: [term]}), type: typeVal}))
+              .then(({term}) => ({term: new Term({lam: [unsubst(new Term({boundvar: [ index ]}), term), typeVal.value[2]]}), type: typeVal}))
           }
 
           case 'dcon':
@@ -1039,7 +1039,7 @@ var Reason = options => {
                 let [decls1, evars] = declarePat(ctx, match.value[0], false, typeTerm),
                     decls2 = equateWithPat(ctx, term.value[0], match.value[0], typeTerm);
                 return check(ctx.cons(decls1.concat(decls2)), match.value[1], type, index)
-                  .then(res => acc.concat([new Match({match: [match.value[0], term = res.term]})]))
+                  .then(({term}) => acc.concat([new Match({match: [match.value[0], term]})]))
               }), Promise.resolve([]))
                 .then(matches => exhaustivityCheck(ctx, term.value[0], typeTerm, term.value[1].map(x => x.value[0]))
                   .then(() => ({term: new Term({case: [term.value[0], matches, typeVal]}), type: typeVal})))
@@ -1067,8 +1067,23 @@ var Reason = options => {
         case 'dcon': return new Term({dcon: [ term2.value[0],
           term2.value[1].map(arg => new Arg({arg: [ subst(term1, arg.value[0], ep, index), arg.value[1]]})) ].concat([term2.value[2]].filter(x => x))})
         case 'case': return new Term({case: [ subst(term1, term2.value[0], ep, index),
-          term2.value[1].map(match => new Match({match: [ match.value[0], subst(term1, match.value[1], ep, index) ]})) ]})
+          term2.value[1].map(match => new Match({match: [ match.value[0], subst(term1, match.value[1], ep, index) ]})) ].concat([term2.value[2]].filter(x => x))})
         case 'star': case 'freevar': return term2
+      }
+    }
+    function unsubst (term1, term2, index = 0) {
+      switch (term2.ctor) {
+        case 'ann': return new Term({ann: [ unsubst(term1, term2.value[0], index), unsubst(term1, term2.value[1], index) ]})
+        case 'pi': return new Term({pi: [ unsubst(term1, term2.value[0], index), unsubst(term1, term2.value[1], index + 1), term2.value[2] ]})
+        case 'lam': return new Term({lam: [ unsubst(term1, term2.value[0], index + 1), term2.value[1] ]})
+        case 'app': return new Term({app: [ unsubst(term1, term2.value[0], index), unsubst(term1, term2.value[1], index), term2.value[2] ]})
+        case 'freevar': return term2.value[0].ctor === 'local' && index === term2.value[0].value[0] ? term1 : term2
+        case 'tcon': return new Term({tcon: [ term2.value[0], term2.value[1].map(tm => unsubst(term1, tm, index)) ]})
+        case 'dcon': return new Term({dcon: [ term2.value[0],
+          term2.value[1].map(arg => new Arg({arg: [ unsubst(term1, arg.value[0], index), arg.value[1]]})) ].concat([term2.value[2]].filter(x => x))})
+        case 'case': return new Term({case: [ unsubst(term1, term2.value[0], index),
+          term2.value[1].map(match => new Match({match: [ match.value[0], unsubst(term1, match.value[1], index) ]})) ].concat([term2.value[2]].filter(x => x))})
+        case 'star': case 'boundvar': return term2
       }
     }
 
@@ -1082,10 +1097,15 @@ var Reason = options => {
         case 'app': return vapply(evaluate(term.value[0], ctx), evaluate(term.value[1], ctx), term.value[2])
         case 'boundvar': return ctx.localVal(term.value[0])
         case 'freevar': return (mbVal = ctx.lookup(term.value[0], 'def')) ? mbVal : vfree(term.value[0])
-        case 'tcon': return new Value({vneutral: [ new Neutral({ntcon: term.value}) ]})
-        case 'dcon': return new Value({vneutral: [ new Neutral({ndcon: term.value}) ]})
+        case 'tcon': return new Value({vneutral: [ new Neutral({ntcon: [ term.value[0], term.value[1].map(tm => evaluate(tm, ctx)) ]}) ]})
+        case 'dcon': return new Value({vneutral: [ new Neutral({ndcon: [ term.value[0],
+          term.value[1].map(arg => new Arg({arg: [ evaluate(arg.value[0], ctx), arg.value[1] ]})) ].concat([term.value[2]].filter(x => x))}) ]})
 
-        case 'case': throw new Error('evaluate called on case??')
+        case 'case': // reduce to one branch
+        // console.log('eval case', ctx.decls.slice(), term, quote(evaluate(term.value[0], ctx)))
+        let match = term.value[1].find(match => quote(evaluate(term.value[0], ctx)).value[0].equal(match.value[0].value[0]));
+        // console.log('eval match', equateWithPat(ctx, quote(evaluate(term.value[0], ctx)), match.value[0], quote(term.value[2])))
+        return evaluate(match.value[1], ctx.cons(equateWithPat(ctx, quote(evaluate(term.value[0], ctx)), match.value[0], quote(term.value[2]))))
       }
     }
 
@@ -1115,8 +1135,9 @@ var Reason = options => {
         case 'nfree': return (name = neutral.value[0]).ctor === 'quote' ?
           new Term({boundvar: [index - name.value[0] - 1]}) :
           new Term({freevar: [name]})
-        case 'ntcon': return new Term({tcon: neutral.value})
-        case 'ndcon': return new Term({dcon: neutral.value})
+        case 'ntcon': return new Term({tcon: [ neutral.value[0], neutral.value[1].map(v => quote(v, index)) ]})
+        case 'ndcon': return new Term({dcon: [ neutral.value[0],
+          neutral.value[1].map(arg => new Arg({arg: [ quote(arg.value[0], index), arg.value[1] ]})) ].concat([neutral.value[2]].filter(x => x))})
         case 'napp': return new Term({app: [ nquote(neutral.value[0], index), quote(neutral.value[1], index), neutral.value[2] ]})
       }
     }
@@ -1234,7 +1255,7 @@ var Reason = options => {
           typei = typei.value[0]
         }
         let result = ctx.lookup(pat.value[0], 'ctor', typei.value[0]),
-            items = substTele(ctx, result.ddef, [...typei.value[1], ...itemsi], result.cdef);
+            items = substTele(ctx, result.ddef, typei.value[1].concat(itemsi), result.cdef);
         return declarePats(ctx, ...pat.value, items.slice(0, -1))
       }
     }
@@ -1272,7 +1293,7 @@ var Reason = options => {
         typei = typei.value[0]
       }
       let result = ctx.lookup(pat.value[0], 'ctor', typei.value[0]),
-          items = substTele(ctx, result.ddef, [...typei.value[1], ...itemsi], result.cdef),
+          items = substTele(ctx, result.ddef, typei.value[1].concat(itemsi), result.cdef),
           rightItems = items.slice(0, -1), args = [], i = 0;
       while (
         (!(rightItems.length ^ (i === pat.value[1].length)) && error.tc_pat_len(pat.value[0])) ||
@@ -1298,21 +1319,21 @@ var Reason = options => {
         case 'freevar': return [new Decl({def: [ term.value[0], quotePat(ctx, pat, type) ]})]
 
         case 'dcon':
-        if (!term.value[0].equal(pat.value[0])) error.tc_pat_cannot_omit(pat.value[0]);
-        let itemsi = [], typei = type;
+        if (!term.value[0].equal(pat.value[0])) return [];//error.tc_pat_cannot_omit(pat.value[0]);
+        let itemsi = [], typei = type; // move into a helper
         while (typei.ctor === 'app') {
           itemsi.unshift(typei.value[1]);
           typei = typei.value[0]
         }
         let result = ctx.lookup(term.value[0], 'ctor', typei.value[0]),
-            items = substTele(ctx, result.ddef, [...typei.value[1], ...itemsi], result.cdef),
-            decls = [], i = 0;
-        for (; i < items.length; i++) {
-          switch (items[i].ctor) {
+            items = substTele(ctx, result.ddef, typei.value[1].concat(itemsi), result.cdef),
+            rightItems = items.slice(0, -1), decls = [], i = 0;
+        for (; rightItems.length; i++) {
+          let thisItem = rightItems.shift();
+          switch (thisItem.ctor) {
             case 'term': case 'erased':
-            decls = decls.concat(equateWithPat(term.value[1][i].value[0], pat.value[1][i].value[0], items[i].value[1]));
-            console.log('subst', pat.value[1][i].value[0], items[i].value[1])
-            //subst(items[i].value[0], pat.value[1][i].value[0], items[i].value[1]);
+            decls = decls.concat(equateWithPat(ctx, term.value[1][i].value[0], pat.value[1][i].value[0], quote(thisItem.value[1])));
+            rightItems.forEach(item => item.value[0] = substFV(thisItem.value[0], item.value[0], term.value[1][i].value[0]));
             break;
 
             case 'contraint':
@@ -1424,10 +1445,10 @@ var Reason = options => {
               context.extend(new Decl(({sig: [name, type]}))).extend(new Decl({def: [name, value]}));
               return acc.concat([{declName: 'def', type, value, term: args.term}])
             }) :
-            check(context, info, mbType).then(({term, type})=> {
-              value = evaluate(info, context);
+            check(context, info, mbType).then(({term, type}) => {
+              value = evaluate(term, context);
               context.extend(new Decl({def: [name, value]}));
-              return acc.concat([{declName: 'def', type, value, term: info}])
+              return acc.concat([{declName: 'def', type, value, term}])
             })
         }
 
@@ -1468,7 +1489,7 @@ var Reason = options => {
 const R = Reason({showDebug: false});
 
 let id1, id2, Void, Unit, Nat_, Vec_, Fin_, Sigma_;
-let id3, plus, tail;
+let id3, plus, one_plus_one, half, tail;
 let Id_, cong, Leq_;
 
 (async () => {
@@ -1502,11 +1523,11 @@ let Id_, cong, Leq_;
   );
 
   // List_ = new R.Data("List'", "(A:Type):Type", [ "Nil:List' A", "Cons:(x:A)(xs:List' A)->List' A" ]);
-  Vec_ = new R.Data(
-    "Vec'", "(A : Type) : Nat' -> Type",
-    [ "Nil : Vec' A Z",
-      "Cons : {n : Nat'}(x : A)(xs : Vec' A n) -> Vec' A (S n)" ]
-  );
+  // Vec_ = new R.Data(
+  //   "Vec'", "(A : Type) : Nat' -> Type",
+  //   [ "Nil : Vec' A Z",
+  //     "Cons : {n : Nat'}(x : A)(xs : Vec' A n) -> Vec' A (S n)" ]
+  // );
   //
   // Fin_ = new R.Data(
   //   "Fin'", "(n:Nat') : Type",
@@ -1532,12 +1553,26 @@ let Id_, cong, Leq_;
         "S m := S (plus m y)" ]
     });
 
-  tail = new R.Sig(
-    "tail", "{A : Type}{m : Nat'} -> Vec' A (S m) -> Vec' A m"
-  ).Def({
-    "{A} {m} v | v":
-    [ "Cons {m} y ys := ys" ]
-  })
+  one_plus_one = new R.Sig(
+    "one_plus_one", "Nat'"
+  ).Def(
+    "plus (S Z) (S Z)"
+  );
+  // half = new R.Sig(
+  //   "half", "Nat' -> Nat'"
+  // ).Def({
+  //   "x | x":
+  //   [ "Z       := Z",
+  //     "S  Z    := Z",
+  //     "S (S m) := S (half m)" ]
+  // })
+  //
+  // tail = new R.Sig(
+  //   "tail", "{A : Type}{m : Nat'} -> Vec' A (S m) -> Vec' A m"
+  // ).Def({
+  //   "{A} {m} v | v":
+  //   [ "Cons {m} y ys := ys" ]
+  // })
 
   // id3 = new R // Cannot pattern match because x could be a function
   //   .Sig("id''", "(T : Type) -> T -> T")
