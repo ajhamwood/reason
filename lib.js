@@ -4,85 +4,100 @@ var Reason = options => {
   // Utilities
 
   const error = new Proxy({
-            append (e1, which, ...args) { try { error[which](...args) } catch (e2) { throw new Error(e1.message + '\n' + e2.message) } }
-          }, { get (o, prop) {
-            if (prop in o) return o[prop];
-            else return (...args) => { throw new Error((({
-              // Interpreter errors
-              duplicate: n => `Interpreter error: name '${n}' already exists`,
-              nosig: n => `Interpreter error: no signature has been declared for ${n}`,
-              notfound: n => `Interpreter error: declaration for ${n} cannot be found`,
-              unchecked: () => 'Interpreter error: not yet typechecked',
-              malf: which => `Interpreter error: malformed ${which}`,
+          append (e1, which, ...args) { try { error[which](...args) } catch (e2) { throw new Error(e1.message + '\n' + e2.message) } }
+        }, { get (o, prop) {
+          if (prop in o) return o[prop];
+          else return (...args) => { throw new Error((({
+            // Interpreter errors
+            duplicate: n => `Interpreter error: name '${n}' already exists`,
+            nosig: n => `Interpreter error: no signature has been declared for ${n}`,
+            notfound: n => `Interpreter error: declaration for ${n} cannot be found`,
+            unchecked: () => 'Interpreter error: not yet typechecked',
+            malf: which => `Interpreter error: malformed ${which}`,
 
-              // Lexer errors
-              lexer_unexpected: (char, match, pos) => `Lexer error: unexpected character${char ? ' ' + char : ''}${
-                match ? ', looking for ' + match : ''} at position ${pos}`,
-              lexer_missing: (match, pos) => `Lexer error: missing expected char ${match} at position ${pos}`,
-              lexer_uncl_str: pos => 'Lexer error: unclosed string at position ' + pos,
-              lexer_digits: pos => `Lexer error: expected digits at position ${pos}`,
+            // Lexer errors
+            lexer_unexpected: (char, match, pos) => `Lexer error: unexpected character${char ? ' ' + char : ''}${
+              match ? ', looking for ' + match : ''} at position ${pos}`,
+            lexer_missing: (match, pos) => `Lexer error: missing expected char ${match} at position ${pos}`,
+            lexer_uncl_str: pos => 'Lexer error: unclosed string at position ' + pos,
+            lexer_digits: pos => `Lexer error: expected digits at position ${pos}`,
 
-              // AST errors
-              internal_ctor_args: () => 'AST error: Wrong number of constructor arguments',
-              internal_ctor_invalid: (inv, ctors) => `AST error: ${inv} not a valid constructor. Looking for: ${ctors.join(', ')}`,
+            // AST errors
+            internal_ctor_args: () => 'AST error: Wrong number of constructor arguments',
+            internal_ctor_invalid: (inv, ctors) => `AST error: ${inv} not a valid constructor. Looking for: ${ctors.join(', ')}`,
 
-              // Parser errors
-              parser_mismatch: (token, index, id, match) => `Parser error: mismatch at '${token.id || ''}'${
-                'value' in token ? `, '${token.value}'` : ''}, token #${index}${id ? `: expected '${id}'` : ''}${match ? `, '${match}'` : ''}`,
-              parser_nesting: () => 'Parser error: parens nest level too deep',
-              parser_notid: () => 'Parser error: not an identifier',
-              parser_notvalid: which => `Parser error: not a valid ${which}`,
+            // Parser errors
+            parser_mismatch: (token, index, id, match) => `Parser error: mismatch at '${token.id || ''}'${
+              'value' in token ? `, '${token.value}'` : ''}, token #${index}${id ? `: expected '${id}'` : ''}${match ? `, '${match}'` : ''}`,
+            parser_nesting: () => 'Parser error: parens nest level too deep',
+            parser_notid: () => 'Parser error: not an identifier',
+            parser_notvalid: which => `Parser error: not a valid ${which}`,
 
-              // Typechecking errors
-              tc_mismatch: (tested, given) => `Type error: mismatch at\n    ${print(tested)}\nexpecting\n    ${print(given)}`,
-              tc_lam_mismatch: ctor => `Type error: lambda has Pi type, not ${ctor}`,
-              tc_lam_infer: () => 'Type error: cannot infer type of lambda',
-              tc_ann_mismatch: tested => `Type error: annotation should have type Type, found ${print(tested)}`,
-              tc_pi_mismatch: (loc, tested) => `Type error: Pi ${loc} should have type Type, found ${print(tested)}`,
-              tc_app_mismatch: tested => `Type error: illegal application - expected type Pi, found ${print(tested)}`,
-              tc_bad_app: () => 'Type error: bad value application',
-              tc_unknown_id: name => `Type error: unknown identifier ${name.value[0]}`,
-              tc_dcon_ambiguity: () => 'Type error: ambiguous data constructor',
-              tc_dcon_cannot_infer_params: () => 'Type error: cannot infer data constructor parameters. Try adding an annotation.',
-              tc_dcon_arg_len: (mlen, tlen) => `Type error: data constructor given wrong number of arguments - (${mlen} instead of ${tlen})`,
-              tc_mismatch_con: which => `Type error: ${which} constructor given, but expected ${which === 'type' ? 'data' : 'type'} constructor`,
+            // Typechecking errors
+            tc_mismatch: (tested, given) => `Type error: mismatch at\n    ${print(tested)}\nexpecting\n    ${print(given)}`,
+            tc_lam_mismatch: ctor => `Type error: lambda has Pi type, not ${ctor}`,
+            tc_lam_infer: () => 'Type error: cannot infer type of lambda',
+            tc_ann_mismatch: tested => `Type error: annotation should have type Type, found ${print(tested)}`,
+            tc_pi_mismatch: (loc, tested) => `Type error: Pi ${loc} should have type Type, found ${print(tested)}`,
+            tc_app_mismatch: tested => `Type error: illegal application - expected type Pi, found ${print(tested)}`,
+            tc_bad_app: () => 'Type error: bad value application',
+            tc_unknown_id: name => `Type error: unknown identifier ${name.value[0]}`,
+            tc_dcon_ambiguity: () => 'Type error: ambiguous data constructor',
+            tc_dcon_cannot_infer_params: () => 'Type error: cannot infer data constructor parameters. Try adding an annotation.',
+            tc_dcon_arg_len: (mlen, tlen) => `Type error: data constructor given wrong number of arguments - (${mlen} instead of ${tlen})`,
+            tc_mismatch_con: which => `Type error: ${which} constructor given, but expected ${which === 'type' ? 'data' : 'type'} constructor`,
 
-              tc_erased_var_subst: () => 'Type error: erased variable used in lambda',
-              tc_erasure_mismatch: () => 'Type error: erasure mismatch',
-              tc_constraint_cannot_eq: (lhs, rhs) => `Cannot equate lhs and rhs of constraint ${print(lhs)} = ${print(rhs)}`,
+            tc_erased_var_subst: () => 'Type error: erased variable used in lambda',
+            tc_erasure_mismatch: () => 'Type error: erasure mismatch',
+            tc_constraint_cannot_eq: (lhs, rhs) => `Cannot equate lhs and rhs of constraint ${print(lhs)} = ${print(rhs)}`,
 
-              tc_erased_pat: () => 'Type error: cannot pattern match erased arguments',
-              tc_pat_dcon_len: dir => `Type error: ${dir ? 'too many' : 'not enough'} patterns in match for data constructor`,
-              tc_pat_len: name => `Type error: wrong number of args to pattern ${name}`,
-              tc_pat_cannot_omit: name => `Type error: case for ${name.toString()} cannot be omitted (yet)`,
-              tc_dcon_cannot_infer: () => 'Type error: cannot infer data constructor',
-              tc_missing_cases: l => `Type error: missing cases for ${l.map(x => x.toString()).join(', ')}`,
-              tc_subpat_cannot_dcon: () => 'Type error: cannot use data constructor in subpattern (yet)',
+            tc_erased_pat: () => 'Type error: cannot pattern match erased arguments',
+            tc_pat_dcon_len: dir => `Type error: ${dir ? 'too many' : 'not enough'} patterns in match for data constructor`,
+            tc_pat_len: name => `Type error: wrong number of args to pattern ${name}`,
+            tc_pat_cannot_omit: name => `Type error: case for ${name.toString()} cannot be omitted (yet)`,
+            tc_dcon_cannot_infer: () => 'Type error: cannot infer data constructor',
+            tc_missing_cases: l => `Type error: missing cases for ${l.map(x => x.toString()).join(', ')}`,
+            tc_subpat_cannot_dcon: () => 'Type error: cannot use data constructor in subpattern (yet)',
 
-              tc_internal: () => 'Type error: internal construct',
+            tc_internal: () => 'Type error: internal construct',
 
-              // Internal error
-              internal: fname => `Internal error: at function ${fname}`,
-              internal_arg: fname => `Internal error: internal function ${fname} given illegal arguments`,
-              internal_cant_find: cname => `Internal error: can't find ${cname}`
-            })[prop] || (() => prop))(...args)) }
-          } });
-  function triggerProxyPromise () { // TODO: replace Promises with a synchronous thenable error monad
-    let px = (obj, args) => new Proxy(new obj(...args), { get (p, prop) {
-      if (prop === 'catch') return cb => p.catch(err => {
-        console.groupCollapsed(`%c${err && err.message}`, 'font-weight: bold; color: red');
-        console.log(err);
-        console.groupEnd();
-        return cb(err)
-      });
-      else return cb => p[prop](res => cb(res))
-    } });
-    Promise = new Proxy(Promise, { get (obj, prop) {
-      if (prop === 'resolve') return v => px(obj, [r => r(v)]);
-      else if (prop === 'reject') return v => px(obj, [r => { throw v }]);
-      else return obj[prop]
-    }, construct (obj, args) { return px(obj, args) } })
-  }
+            // Internal error
+            internal: fname => `Internal error: at function ${fname}`,
+            internal_arg: fname => `Internal error: internal function ${fname} given illegal arguments`,
+            internal_cant_find: cname => `Internal error: can't find ${cname}`
+          })[prop] || (() => prop))(...args)) }
+        } }),
+        Alt = Object.assign(class {
+          constructor (fn) {
+            let thrown = false, value, newThis = this,
+                error = v => (thrown = true, v),
+                join = v => newThis = Alt.prototype.isPrototypeOf(v) ? v : newThis;
+            Object.assign(this, {
+              left (fn) {
+                if (!thrown) return this;
+                thrown = false;
+                join(value = fn(value, error));
+                return newThis },
+              right (fn) {
+                if (thrown) return this;
+                join(value = fn(value, error));
+                return newThis },
+              map (fn) {
+                if (!thrown) value = value.map(v => join(fn(v, error)));
+                return newThis } });
+            return fn(
+              v => {
+                join(value = v);
+                return newThis },
+              e => {
+                thrown = true;
+                join(value = e);
+                return newThis } )
+          }
+        }, {
+          pure: v => new Alt(r => r(v)),
+          throw: e => new Alt((_, l) => l(e))
+        });
 
   let active = [];
   function wait (declType, name) {
@@ -102,19 +117,19 @@ var Reason = options => {
 
   // Interpreter
 
-  // Data(name, tcon, [dcons], {...builtins})
-  // Data(name, tcon, [{dcons}], {...builtins})
   class Data {
     constructor (name, ddef, cdefs, builtins) {
       wait('data', name);
-      let ready = false, jsTerm = {},
-          ddefLex = tokenise({name, sourceString: ddef}),
-          cdefLexes = cdefs.map(cdef => {
-            if (typeof cdef === 'string') return tokenise({sourceString: cdef});
-            else return tokenise({sourceString: Object.keys(cdef)[0]})
-          });
-      sequence(() => cdefLexes.reduce((p, l) => p.then(acc => parse(l, 'cdef').then(res => (acc[0].value[2].push(res[0]), acc))), parse(ddefLex, 'ddef'))
-        .then(decls => typecheck(decls, context)).then(res => {
+      let ready = false, jsTerm = {};
+      // Data(name, tcon, [dcons], {...builtins})
+      // Data(name, tcon, [{dcons}], {...builtins})
+      sequence(() => cdefs.reduce(
+        (p, cdef) => p.then(acc => tokenise({sourceString: (typeof cdef === 'string') ? cdef : Object.keys(cdef)[0]})
+          .then(lex => parse(lex, 'cdef'))
+          .then(res => (acc[0].value[2].push(res[0]), acc))),
+        tokenise({name, sourceString: ddef}).then(lex => parse(lex, 'ddef')))
+        .then(decls => typecheck(decls, context))
+        .then(res => {
           let [{declName, params, type, ctors}] = res,
               appliedTerms = [];
           if (declName === 'data') Object.assign(jsTerm, {params, type, ctors, appliedTerms})
@@ -130,44 +145,50 @@ var Reason = options => {
     }
   }
 
-  // Sig(name, signature)
-  // Sig(name, sigdef)
   class Sig {
     constructor (name, declString) {
       wait('sig', name);
-      let ready = false, jsTerm = {},
-          lex = tokenise({name, sourceString: declString});
-      sequence(() => parse(lex, 'sig').then(decls => typecheck(decls, context)).then(res => {
-        let [{declName, term, type, value}] = res;
-        if (declName === 'sig') Object.assign(jsTerm, {type: term, typeValue: value});
-        ready = true;
-        unwait('sig', name)
-      }));
+      let ready = false, jsTerm = {};
+      // Sig(name, signature)
+      // Sig(name, sigdef)
+      sequence(() => tokenise({name, sourceString: declString})
+        .then(lex => parse(lex, 'sig'))
+        .then(decls => typecheck(decls, context))
+        .then(res => {
+          let [{declName, term, type, value}] = res;
+          if (declName === 'sig') Object.assign(jsTerm, {type: term, typeValue: value});
+          ready = true;
+          unwait('sig', name)
+        }));
       return { Def: (...args) => jsTerm = Object.assign(new Def(name, ...args), jsTerm) }
     }
   }
 
-  // Def(name, sigdef, {...builtins})
-  // Def(name, [pats])
   class Def {
     constructor (name, declStrings, builtins) {
       wait('def', name);
-      let ready = false, jsTerm = builtins, lex;
+      let ready = false, jsTerm = builtins;
       if (typeof declStrings === 'string') {
-        lex = tokenise({name, sourceString: declStrings});
-        sequence(() => parse(lex, 'def').then(decls => typecheck(decls, context)).then(ress => {
-          ress.forEach(res => {
-            let {declName, term, type, value} = res,
-                appliedTerms = [];
-            if (declName === 'sig') Object.assign(jsTerm, {type: term, typeValue: value});
-            if (declName === 'def') Object.assign(jsTerm, {term, value, typeValue: type, appliedTerms})
-          })
-          ready = true;
-          unwait('def', name)
-        }));
+        // Def(name, sigdef, {...builtins})
+        sequence(() => tokenise({name, sourceString: declStrings})
+          .then(lex => parse(lex, 'def'))
+          .then(decls => typecheck(decls, context))
+          .then(ress => {
+            ress.forEach(res => {
+              let {declName, term, type, value} = res,
+                  appliedTerms = [];
+              if (declName === 'sig') Object.assign(jsTerm, {type: term, typeValue: value});
+              if (declName === 'def') Object.assign(jsTerm, {term, value, typeValue: type, appliedTerms})
+            })
+            ready = true;
+            unwait('def', name)
+          }));
       } else if (Array.prototype.isPrototypeOf(declStrings)) {
-        sequence(() => declStrings.map(declString => tokenise({name, sourceString: declString}))
-          .reduce((p, lex) => p.then(acc => parse(lex, 'pat').then(res => acc.concat([res]))), Promise.resolve([]))
+        // Def(name, [pats])
+        sequence(() => declStrings.reduce((p, lex) => p
+          .then(acc => tokenise({name, sourceString: declString})
+            .then(lex => parse(lex, 'pat'))
+            .then(res => acc.concat([res]))), Promise.resolve([]))
           .then(decls => typecheck(decls, context))).then(ress => {
             // ress.forEach(res => {
             //   let {declName, term, type, value} = res,
@@ -182,21 +203,23 @@ var Reason = options => {
       } else {
         let e = Object.entries(declStrings);
         if (e.length !== 1) error.malf('definition');
-        let [caseDef, pats] = e[0], caseLex = tokenise({name, sourceString: caseDef}),
-            patLexes = pats.map(pat => tokenise({sourceString: pat}));
-        sequence(() => parse(caseLex, 'case').then(([bvs, fn]) => patLexes.reduce((p, pat) =>
-          p.then(acc => parse(pat, 'pat', {casePat: true, bvs}).then(res => acc.concat([res]))), Promise.resolve([]))
+        let [caseDef, pats] = e[0];
+        sequence(() => tokenise({name, sourceString: caseDef})
+          .then(lex => parse(lex, 'case'))
+          .then(([bvs, fn]) => pats.reduce((p, pat) => p.then(acc => tokenise({sourceString: pat})
+            .then(pat => parse(pat, 'pat', {casePat: true, bvs}))
+            .then(res => acc.concat([res]))), Promise.resolve([]))
             .then(matches => [fn(matches.flat())]))
-            .then(decls => typecheck(decls, context)).then(ress => {
-              ress.forEach(res => {
-                let {declName, term, type, value} = res,
-                    appliedTerms = [];
-                if (declName === 'sig') Object.assign(jsTerm, {type: term, typeValue: value});
-                if (declName === 'def') Object.assign(jsTerm, {term, value, typeValue: type, appliedTerms})
-              });
-              ready = true;
-              unwait('def', name)
-            })
+          .then(decls => typecheck(decls, context)).then(ress => {
+            ress.forEach(res => {
+              let {declName, term, type, value} = res,
+                  appliedTerms = [];
+              if (declName === 'sig') Object.assign(jsTerm, {type: term, typeValue: value});
+              if (declName === 'def') Object.assign(jsTerm, {term, value, typeValue: type, appliedTerms})
+            });
+            ready = true;
+            unwait('def', name)
+          })
         )
       }
       return jsTerm = Object.assign((...args) => {
@@ -212,114 +235,119 @@ var Reason = options => {
 
   // Lexer
 
-  function tokenise ({name, sourceString}) { // TODO: refactor using alt()
+  function tokenise ({name, sourceString}) {
     let rx_token = /^((\s+)|([a-zA-Z][a-zA-Z0-9_]*[\']*)|([:!$%&*+.,/<=>\?@\\^|\-~\[\]]{1,5})|(0|-?[1-9][0-9]*)|([(){}"]))(.*)$/,
         rx_digits = /^([0-9]+)(.*)$/,
         rx_hexs = /^([0-9a-fA-F]+)(.*)$/,
-        tokens = name ? [{id: name, value: 'name'}] : [], pos = 0, word, char;
+        source = sourceString, tokens = name ? [{id: name, value: 'name'}] : [], index = 0, word, char;
 
-    function make (t) { tokens.push(t) }
-
-    function string () {
-      word = '';
-      return (function next () {
-        if (char === '"') {
-          snip();
-          make({id: char, value: 'string'})
+    function alt (fn) {
+      let rewind = index;
+      return Alt.pure().right((v, err) => fn({
+        add: token => tokens.push(token),
+        next: match => {
+          if (match && match !== char) return char ?
+            err(['lexer_unexpected', char, match, index - 1]) :
+            err(['lexer_missing', match, index - 1]);
+          if (sourceString) {
+            word += (char = source[0]);
+            source = source.slice(1)
+          }
+          index++
+        },
+        back: () => {
+          if (word) {
+            source = (char = word.slice(-1)) + source;
+            word = word.slice(0, -1);
+            index--
+          } else char = ''
         }
-        else if (char === '') error.lexer_uncl_str(pos);
-        else if (char === '\\') {
-          nextchar('\\');
-          if (char === '') error.lexer_uncl_str(pos);
-          else if (char === '"') nextchar()
+      }, err)).left((e, err) => {
+        index = rewind;
+        return err(e)
+      })
+    }
+
+    function lex () {
+      return alt((acc, err) => {
+        function string () {
+          word = '';
+          return alt(() => function loop () {
+            if (char === '"') {
+              word = word.slice(0, -1)
+              acc.add({id: char, value: 'string'})
+            } else if (char === '') return err(['lexer_uncl_str', index]);
+            else if (char === '\\') {
+              acc.next('\\');
+              if (char === '') return err(['lexer_uncl_str', index]);
+              else if (char === '"') acc.next()
+            }
+            else acc.next();
+            return loop()
+          })
         }
-        else nextchar();
-        return next()
-      })()
-    }
-    function snip () { word = word.slice(0, -1) } // from end
-    function nextchar (match) {
-      if (match && match !== char) char ?
-        error.lexer_unexpected(char, match, pos - 1) :
-        error.lexer_missing(match, pos - 1);
-      if (sourceString) {
-        word += (char = sourceString[0]);
-        sourceString = sourceString.slice(1)
-      }
-      pos++;
-      return char
-    }
-    function backchar () {
-      if (word) {
-        char = word.slice(-1);
-        sourceString = char + sourceString;
-        pos -= 1;
-        snip();
-      }
-      else char = '';
-      return char;
-    }
 
-    function num () {
-      if (word === '0') {
-        nextchar();
-        if (char === '.') frack();
-        else if (char === 'x') {
-          somedigits(rx_hexs);
-          nextchar()
+        function num () {
+          return alt((acc, err) => {
+            function frack () {
+              if (char === '.') {
+                somedigits(rx_digits);
+                acc.next()
+              }
+              if (char === 'E' || char === 'e') {
+                acc.next();
+                if (char !== '+' && char !== '-') acc.back()
+                somedigits(rx_digits);
+                acc.next()
+              }
+            }
+            function somedigits (rx) {
+              let result = source.match(rx);
+              if (!result) return err(['lexer_digits', index]);
+              char = result[1];
+              index += char.length;
+              source = result[2];
+              word += char
+            }
+            if (word === '0') {
+              acc.next();
+              if (char === '.') frack();
+              else if (char === 'x') {
+                somedigits(rx_hexs);
+                acc.next()
+              }
+            } else {
+              acc.next();
+              frack()
+            }
+            if (/[0-9a-zA-Z]/.test(char)) return err(['lexer_unexpected', char, null, index]);
+            acc.back();
+            return acc.add({id: word, value: 'num'})
+          })
         }
-      } else {
-        nextchar();
-        frack()
-      }
-      if (/[0-9a-zA-Z]/.test(char)) error.lexer_unexpected(char, null, col);
-      backchar();
-      return make({id: word, value: 'num'})
-    }
-    function frack () {
-      if (char === ".") {
-        somedigits(rx_digits);
-        nextchar();
-      }
-      if (char === "E" || char === "e") {
-        nextchar();
-        if (char !== "+" && char !== "-") backchar();
-        somedigits(rx_digits);
-        nextchar();
-      }
-    }
-    function somedigits (rx) {
-      let result = sourceString.match(rx);
-      if (result) {
-        char = result[1];
-        pos += char.length;
-        sourceString = result[2];
-        word += char
-      } else return error.lexer_digits(col)
+
+        let result;
+        if (!source) return acc.add({value: 'final'});
+        result = source.match(rx_token);
+        if (!result) return err(['lexer_unexpected', source[0], null, index]);
+        word = result[1];
+        index += word.length;
+        source = result[7];
+
+        if (result[3]) acc.add({id: word});
+        else if (result[4]) acc.add({id: word, value: 'op'});
+        else if (result[5]) return num().right(lex);
+        else if (result[6]) {
+          if (word === '"') return string().right(lex);
+          else acc.add({id: word, value: 'punc'})
+        }
+        return lex()
+      })
     }
 
-    return (function lex () {
-      let result;
-      if (!sourceString) {
-        make({value: 'final'});
-        return tokens;
-      }
-      result = sourceString.match(rx_token);
-      if (!result) error.lexer_unexpected(sourceString[0], null, pos);
-      word = result[1];
-      pos += word.length;
-      sourceString = result[7];
-
-      if (result[2]) return lex(); // whitespace
-      else if (result[3]) make({id: word}); // regular word
-      else if (result[4]) make({id: word, value: 'op'}); // operator
-      else if (result[5]) num(); // number
-      else if (result[6]) {
-        if (word === '"') string(); // string literal
-        else make({id: word, value: 'punc'}); // punctuation
-      }
-      return lex()
-    })()
+    return new Promise(r => lex()
+      .right(() => r(tokens))
+      .left(e => error[e.shift()](...e)))
   }
 
 
@@ -454,7 +482,6 @@ var Reason = options => {
     fresh = (i => () => i++)(0)
     parse (tokens, sourceName, parseOptions = {}) {
       // TODO: mixfix operators
-      // triggerProxyPromise()
 
       function debug (msg, res) {
         if (!showDebug) return;
@@ -985,7 +1012,6 @@ var Reason = options => {
   const context = new Context();
 
   function typecheck (decls) {
-    // triggerProxyPromise()
 
     // Infer/check
     function infer (args) { //context, term, number -> value
@@ -1629,19 +1655,19 @@ let Id_, cong, Leq_;
   //     "S  Z    := Z",
   //     "S (S m) := S (half m)" ]
   // })
-
+  //
   // tail = new R.Sig(
   //   "tail", "{A : Type}{m : Nat'} -> Vec' A (S m) -> Vec' A m"
   // ).Def({
   //   "{A} {m} v | v":
   //   [ "Cons {m} y ys := ys" ]
   // })
-
+  //
   // id3 = new R // Cannot pattern match because x could be a function
   //   .Sig("id''", "(T : Type) -> T -> T")
   //   // .Def(["@ x := x"]);
   //   .Def({"t x | x": [ "n := n" ]});
-
+  //
   // // proof example
   // Id_ = new R.Data(
   //   "Id'", "{A : Type}(x : A) : A -> Type",
