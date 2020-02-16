@@ -910,57 +910,64 @@ var Reason = options => {
 
   // Pretty printer
 
-  function print (obj, int1 = 0, int2 = 0) { // TODO: don't print vars if they aren't used later in the expression
-    function testObj (klass) { return klass.prototype.isPrototypeOf(obj) }
+  function print (o) { // TODO: annotation pass, then print pass
     function vars (i) { return 'xyzwvutsrqponmlkjihgfedcba'.split('')[i % 26].repeat(Math.ceil(++i / 26)) }
-    function parensIf (bool, string) { return bool ? `(${string})` : string }
-    function bracesIf (bool, string) { return bool ? `{${string}}` : string }
-    function enclosureIf (bBool, pBool, string) { return bBool ? bracesIf(true, string) : parensIf(pBool, string) }
-    function nestedLambda (body, eps, index) { return body.ctor === 'lam' ?
-      nestedLambda(body.value[0], eps.concat([body.value[1]]), index + 1) :
-      Array.from(Array(index), (_, i) => bracesIf(eps[i], vars(i))).join(', ') + ' => ' + print(body, 0, index) }
-    function nestedPi (range, domain, eps, index) { return domain.ctor === 'pi' ?
-      nestedPi([[domain.value[0], index]].concat(range), domain.value[1], eps.concat([domain.value[2]]), index + 1) :
-      range.reverse().map(([tm, i], j) => enclosureIf(eps[j], true, vars(i) + ' : ' + print(tm, 1, i)) + ' -> ').join('') + print(domain, 0, index) }
-    if (testObj(Term)) {
-      switch (obj.ctor) {
-        case 'star': return 'Type'
-        case 'ann': return parensIf(int1 > 1, print(obj.value[0], 2, int2) + ' : ' + print(obj.value[1], 0, int2))
-        case 'pi': return obj.value[1].ctor === 'pi' ?
-          parensIf(int1 > 1, nestedPi([[obj.value[1].value[0], int2 + 1], [obj.value[0], int2]], obj.value[1].value[1], [obj.value[2]], int2 + 2)) :
-          parensIf(true, bracesIf(obj.value[2], vars(int2) + ' : ' + print(obj.value[0], 0, int2)) + ' -> ' + print(obj.value[1], 0, int2 + 1))
-        case 'lam': return parensIf(int1 > 0, obj.value[0].ctor === 'lam' ?
-          nestedLambda(obj.value[0].value[0], [obj.value[1]], int2 + 2) :
-          bracesIf(obj.value[1], vars(int2)) + ' => ' + print(obj.value[0], 0, int2 + 1))
-        case 'app': return parensIf(int1 > 1, print(obj.value[0], 2, int2) + ' ' + bracesIf(obj.value[2], print(obj.value[1], 2, int2)))
-        case 'boundvar': return vars(int2 - obj.value[0] - 1)
-        case 'freevar': return print(obj.value[0])
-        case 'tcon': return parensIf(int1 > 2, print(obj.value[0]) + obj.value[1].map(tm => ' ' + print(tm, 3, int2)).join(''))
-        case 'dcon': return parensIf(int1 > 1 + !obj.value[1].length, print(obj.value[0]) +
-          obj.value[1].map(arg => ' ' + (arg.value[1] ? `{${print(arg.value[0], 2, int2)}}` : print(arg.value[0], 2, int2))))
-        case 'case': return print(obj.value[0], 0, int2) + ' |' +
-          obj.value[1].map(match => '\n  ' + print(match.value[0]) + ' := ' + print(match.value[1], 0, int2))
-        }
-    } else if (testObj(Name)) {
-      switch (obj.ctor) {
-        case 'global': return obj.value[0]
-        case 'local': return typeof (obj.value[0]) === 'number' ? vars(obj.value[0]) : obj.value[0]
+    let anns = [], preString = (function recPrint (obj, int1 = 0, int2 = 0) {
+      function step (v) {
+        anns[v - 1] = 0;
+        return v
       }
-    } else if (testObj(Pat)) {
-      switch (obj.ctor) {
-        case 'patvar': return print(obj.value[0])
-        case 'patdcon': return parensIf(int1 > 1, print(obj.value[0]) +
-          obj.value[1].map(arg => ' ' + (arg.value[1] ? `{${print(arg.value[0], 1, int2)}}` : print(arg.value[0], 1, int2))))
-      }
-    } else if (testObj(Tele)) {
-      return (obj.items.length - 1 ? ' ' : '') + obj.items.slice(0, -1).map(item => {
-        switch (item.ctor) {
-          case 'term': return `(${print(item.value[0]) + ' : ' + print(item.value[1])})`
-          case 'erased': return `{${print(item.value[0]) + ' : ' + print(item.value[1])}}`
-          case 'constraint': return `{${print(item.value[0]) + ' = ' + print(item.value[1])}}`
+      function testObj (klass) { return klass.prototype.isPrototypeOf(obj) }
+      function parensIf (bool, string) { return bool ? `(${string})` : string }
+      function bracesIf (bool, string) { return bool ? `{${string}}` : string }
+      function enclosureIf (bBool, pBool, string) { return bBool ? bracesIf(true, string) : parensIf(pBool, string) }
+      function nestedLambda (body, eps, index) { return body.ctor === 'lam' ?
+        nestedLambda(body.value[0], eps.concat([body.value[1]]), index + 1) :
+        Array.from(Array(index), (_, i) => bracesIf(eps[i], vars(i))).join(', ') + ' => ' + recPrint(body, 0, index) }
+      function nestedPi (range, domain, eps, index) { return domain.ctor === 'pi' ?
+        nestedPi([[domain.value[0], index]].concat(range), domain.value[1], eps.concat([domain.value[2]]), step(index + 1)) :
+        range.reverse().map(([tm, i], j) => enclosureIf(eps[j], true, `[${i}]` + recPrint(tm, 1, i)) + ' -> ').join('') + recPrint(domain, 0, index) }
+      if (testObj(Term)) {
+        switch (obj.ctor) {
+          case 'star': return 'Type'
+          case 'ann': return parensIf(int1 > 1, recPrint(obj.value[0], 2, int2) + ' : ' + recPrint(obj.value[1], 0, int2))
+          case 'pi': return obj.value[1].ctor === 'pi' ?
+            parensIf(int1 > 1, nestedPi([[obj.value[1].value[0], step(int2 + 1)], [obj.value[0], int2]], obj.value[1].value[1], [obj.value[2], obj.value[1].value[2]], step(int2 + 2))) :
+            parensIf(true, bracesIf(obj.value[2], `[${int2}]` + recPrint(obj.value[0], 0, int2)) + ' -> ' + recPrint(obj.value[1], 0, step(int2 + 1)))
+          case 'lam': return parensIf(int1 > 0, obj.value[0].ctor === 'lam' ?
+            nestedLambda(obj.value[0].value[0], [obj.value[1]], int2 + 2) :
+            bracesIf(obj.value[1], vars(int2)) + ' => ' + recPrint(obj.value[0], 0, int2 + 1))
+          case 'app': return parensIf(int1 > 1, recPrint(obj.value[0], 2, int2) + ' ' + bracesIf(obj.value[2], recPrint(obj.value[1], 2, int2)))
+          case 'boundvar': anns[int2 - obj.value[0] - 1] = 1; return vars(int2 - obj.value[0] - 1)
+          case 'freevar': return recPrint(obj.value[0], 0, int2)
+          case 'tcon': return parensIf(int1 > 2, recPrint(obj.value[0], 0, int2) + obj.value[1].map(tm => ' ' + recPrint(tm, 3, int2)).join(''))
+          case 'dcon': return parensIf(int1 > 1 + !obj.value[1].length, recPrint(obj.value[0], 0, int2) +
+            obj.value[1].map(arg => ' ' + (arg.value[1] ? `{${recPrint(arg.value[0], 2, int2)}}` : recPrint(arg.value[0], 2, int2))))
+          case 'case': return recPrint(obj.value[0], 0, int2) + ' |' +
+            obj.value[1].map(match => '\n  ' + recPrint(match.value[0], 0, int2) + ' := ' + recPrint(match.value[1], 0, int2))
         }
-      }).join('') + ' : ' + print(obj.items.slice(-1)[0].value[1], 1, int2)
-    } else if (testObj(Ctor)) { return print(obj.value[0]) + print(obj.value[1]) }
+      } else if (testObj(Name)) {
+        switch (obj.ctor) {
+          case 'global': return obj.value[0]
+          case 'local': return typeof (obj.value[0]) === 'number' ? vars(obj.value[0]) : obj.value[0]
+        }
+      } else if (testObj(Pat)) {
+        switch (obj.ctor) {
+          case 'patvar': return recPrint(obj.value[0], 0, int2)
+          case 'patdcon': return parensIf(int1 > 1, recPrint(obj.value[0], 0, int2) +
+          obj.value[1].map(arg => ' ' + (arg.value[1] ? `{${recPrint(arg.value[0], 1, int2)}}` : recPrint(arg.value[0], 1, int2))))
+        }
+      } else if (testObj(Tele)) {
+        return (obj.items.length - 1 ? ' ' : '') + obj.items.slice(0, -1).map(item => {
+          switch (item.ctor) {
+            case 'term': return `(${recPrint(item.value[0], 0, int2) + ' : ' + recPrint(item.value[1], 0, int2)})`
+            case 'erased': return `{${recPrint(item.value[0], 0, int2) + ' : ' + recPrint(item.value[1], 0, int2)}}`
+            case 'constraint': return `{${recPrint(item.value[0], 0, int2) + ' = ' + recPrint(item.value[1], 0, int2)}}`
+          }
+        }).join('') + ' : ' + recPrint(obj.items.slice(-1)[0].value[1], 1, int2)
+      } else if (testObj(Ctor)) { return recPrint(obj.value[0]) + recPrint(obj.value[1]) }
+    })(o);
+    return preString.replace(/\[(\d{1,3})\]/g, (_, m) => (anns[m] ? vars(anns.slice(0, m + 1).reduce((a, b) => a + b) - 1) + ' : ' : ''))
   }
 
 
@@ -1035,7 +1042,7 @@ var Reason = options => {
                 ctx: ctx.cons(new Decl({sig: [ local, evaluate(term.value[0], ctx) ]})),
                 term: subst(new Term({freevar: [ local ]}), term.value[1], false), index: index + 1})
                 .then(type2 => {
-                  term.value[1] = innerArgs.term;
+                  args.term = new Term({pi: [term.value[0], unsubst(new Term({boundvar: [ index ]}), innerArgs.term), term.value[2]]});
                   if (type2.ctor !== 'vstar') error.tc_pi_mismatch('range', quote(type2));
                   return vstar
                 })
@@ -1615,24 +1622,6 @@ let Id_, cong, Leq_;
     { fromJS: v => ((f = a => (--v ? f : x => x)(Nat().s(a))) => f(Nat().z()))() }
   );
 
-  List_ = new R.Data("List'", "(A:Type):Type", [ "Nil:List' A", "Cons:(x:A)(xs:List' A)->List' A" ]);
-  Vec_ = new R.Data(
-    "Vec'", "(A : Type) : Nat' -> Type",
-    [ "Nil : Vec' A Z",
-      "Cons : {n : Nat'}(x : A)(xs : Vec' A n) -> Vec' A (S n)" ]
-  );
-
-  Fin_ = new R.Data(
-    "Fin'", "(n:Nat') : Type",
-    [ "Zero:{n:Nat'}->Fin'(S n)",
-      "Succ:{n:Nat'}(i:Fin' n)->Fin'(S n)" ]
-  );
-
-  Sigma_ = new R.Data(
-    "Sigma'", "(A:Type)(B:A->Type):Type",
-    [ "DProd:(x:A)(y:B x)->Sigma' A B" ]
-  )
-
   // pattern matching
   plus = new R
     .Sig("plus", "Nat' -> Nat' -> Nat'")
@@ -1654,11 +1643,30 @@ let Id_, cong, Leq_;
 
   console.log(`%cone_plus_one =`, 'font-weight: bold; color: deeppink', R.print(one_plus_one.value.quote()));
 
+  List_ = new R.Data("List'", "(A:Type):Type", [ "Nil:List' A", "Cons:(x:A)(xs:List' A)->List' A" ]);
+
   listMap = new R.Sig(
     "listMap", "{A B : Type} -> (A -> B) -> List' A -> List' B" ).Def({
     "{A}{B} f xs | xs":
     [ "Nil := Nil",
       "Cons y ys := Cons (f y) (listMap f ys)" ] });
+
+  Vec_ = new R.Data(
+    "Vec'", "(A : Type) : Nat' -> Type",
+    [ "Nil : Vec' A Z",
+      "Cons : {n : Nat'}(x : A)(xs : Vec' A n) -> Vec' A (S n)" ]
+  );
+
+  Fin_ = new R.Data(
+    "Fin'", "(n:Nat') : Type",
+    [ "Zero:{n:Nat'}->Fin'(S n)",
+      "Succ:{n:Nat'}(i:Fin' n)->Fin'(S n)" ]
+  );
+
+  Sigma_ = new R.Data(
+    "Sigma'", "(A:Type)(B:A->Type):Type",
+    [ "DProd:(x:A)(y:B x)->Sigma' A B" ]
+  )
 
   // half = new R.Sig(
   //   "half", "Nat' -> Nat'"
