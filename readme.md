@@ -8,6 +8,11 @@ I'm dreaming of implementing cubical types so proofs can be transported from the
 
 I like the promise of efficiency from using interaction nets as well so I'm also planning to yoink that from moonad/Formality at some point.
 
+References:
+* [LambdaPi](https://www.andres-loeh.de/LambdaPi/)
+* [Pi-Forall](https://github.com/sweirich/pi-forall)
+* [Dependent pattern matching and proof-relevant unification](https://jesper.sikanda.be/files/thesis-final-digital.pdf)
+
 ### Target usage
 ```
 // functions, lambdas
