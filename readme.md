@@ -2,7 +2,7 @@
 
 This project aims to create a dependently-typed language interpreter in Javascript to enable native 'certifiable' (i.e. provable) programs.
 
-For the most part, the nuts and bolts have been and are being lifted wholesale from Andres Loeh's LambdaPi and Stephanie Weirich's Pi-Forall.
+For the most part, the nuts and bolts have been lifted wholesale from other people's didactic projects.
 
 I'm dreaming of implementing cubical types so proofs can be transported from the peano naturals to (positive) big ints. Maybe native Javascript functions and types can be incorporated as builtins in a systematic way?
 
