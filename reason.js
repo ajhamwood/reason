@@ -42,7 +42,7 @@ var Reason = options => {
             tc_pi_mismatch: (loc, tested) => `Type error: Pi ${loc} should have type Type, found ${print(tested)}`,
             tc_app_mismatch: tested => `Type error: illegal application - expected type Pi, found ${print(tested)}`,
             tc_bad_app: () => 'Type error: bad value application',
-            tc_unknown_id: name => `Type error: unknown identifier ${name.value[0]}`,
+            tc_unknown_id: name => `Type error: unknown identifier ${name[0]}`,
             tc_dcon_ambiguity: () => 'Type error: ambiguous data constructor',
             tc_dcon_cannot_infer_params: () => 'Type error: cannot infer data constructor parameters. Try adding an annotation.',
             tc_dcon_arg_len: (mlen, tlen) => `Type error: data constructor given wrong number of arguments - (${mlen} instead of ${tlen})`,
@@ -102,7 +102,7 @@ var Reason = options => {
 
   let active = [];
   function wait (declType, name) {
-    if (~active.findIndex(([d, n]) => d === declType && n === name)) error.duplicate(declType, name);
+    if (~active.findIndex(([d, n]) => d === declType && n === name)) error.duplicate(name);
     else active.push([declType, name])
   }
   function unwait (declType, name) {
@@ -119,30 +119,77 @@ var Reason = options => {
   // Interpreter
 
   class Data {
-    constructor (name, ddef, cdefs, builtins) {
+    constructor (name, ddef, cdefs, builtins = {}) {
       wait('data', name);
-      let ready = false, jsTerm = {};
+      let ready = false, ctorNames = cdefs.map(cdef => {
+            let getName = str => str.match(/^\s+|([a-zA-Z][a-zA-Z0-9_]*[\']*)/)[1];
+            return typeof cdef === 'string' ? [getName(cdef), {}] : Object.entries(cdef)[0].map((x, i) => i ? x : getName(x))
+          }),
+          jsTyTerm = ctorNames.reduce((a, x) => Object.assign(a, { [x[0].toLowerCase()]: () => error.unchecked() }),
+            Object.assign({ toString: () => `<${name}>`}, builtins));
       // Data(name, tcon, [dcons], {...builtins})
       // Data(name, tcon, [{dcons}], {...builtins})
       sequence(() => cdefs.reduce(
         (p, cdef) => p.then(acc => tokenise({sourceString: (typeof cdef === 'string') ? cdef : Object.keys(cdef)[0]})
           .then(lex => parse(lex, 'cdef'))
-          .then(res => (acc[0].value[2].push(res[0]), acc))),
+          .then(res => (acc[0][2].push(res[0]), acc))),
         tokenise({name, sourceString: ddef}).then(lex => parse(lex, 'ddef')))
         .then(decls => typecheck(decls, context))
         .then(res => {
-          let [{declName, params, type, ctors}] = res,
-              appliedTerms = [];
-          if (declName === 'data') Object.assign(jsTerm, {params, type, ctors, appliedTerms})
+          let [{declName, term, type, ctors}] = res;
+          if (declName === 'data') {
+            Object.assign(jsTyTerm, {term, type, appliedTerms: []});
+            let tyTerm = term;
+            ctorNames.forEach(([ctorName, cBuiltins]) => {
+              jsTyTerm[ctorName.toLowerCase()] = Object.assign((...termArgs) => {
+                // check if indexed type -> appliedTerm for each param -> if not, throw error
+                let term = new Term({dcon: [ new Name({global: [ctorName]}), termArgs.map(tm =>
+                      new Arg({arg: [tm.term, false]}))
+                    ]}),
+                    type = context.lookup(term[0], 'ctor')[0].cdef.items[0][1].quote();
+                let jsTmTerm = { term, type, appliedTerms: [] }, fresh = parser.fresh();
+                if (termArgs.length) {
+                  jsTmTerm.appliedTerms = termArgs;
+                  ready = false;
+                  wait('data', fresh);
+                  sequence(() => typecheck([
+                    new Decl({sig: [ new Name({global: [fresh]}), tyTerm ]}),
+                    new Decl({def: [ new Name({global: [fresh]}), term ]})
+                  ])).then(res => {
+                      unwait('data', fresh);
+                      ready = true
+                    })
+                }
+                Object.assign(jsTmTerm, Object.assign({ toString: () => `<${ctorName}>` }, Object.entries(cBuiltins)
+                  .reduce((a, [fname, fn]) => Object.assign(a, { [fname]: fn.bind(jsTmTerm.appliedTerms) }), {})));
+                return Object.assign(() => jsTmTerm, jsTmTerm)
+              }, cBuiltins)
+            })
+          }
           ready = true;
           unwait('data', name)
         }));
-      return jsTerm = Object.assign((...args) => {
+      return jsTyTerm = Object.assign((...typeArgs) => {
         if (ready) {
-          jsTerm.appliedTerms = jsTerm.appliedTerms.concat(args);
-          return jsTerm
+          if (typeArgs.length) {
+            jsTyTerm.appliedTerms = jsTyTerm.appliedTerms.concat(typeArgs);
+            let fresh = parser.fresh();
+            ready = false;
+            wait('data', fresh)
+            sequence(() => typecheck([
+              new Decl({sig: [ new Name({global: [fresh]}), new Term({star: []}) ]}),
+              new Decl({def: [
+                new Name({global: [fresh]}),
+                new Term({tcon: [ new Name({global: [name]}), termArgs.map(tm => tm.term) ]}) // if no term, raise error
+              ]})
+            ], context))
+              .then(res => {
+                unwait('data', fresh)
+                ready = true;
+              })
+          } else return jsTyTerm
         } else error.unchecked()
-      }, jsTerm)
+      }, jsTyTerm)
     }
   }
 
@@ -226,8 +273,8 @@ var Reason = options => {
       return jsTerm = Object.assign((...args) => {
         if (ready) {
           jsTerm.appliedTerms = jsTerm.appliedTerms.concat(args);
-          return jsTerm; // TODO: typecheck and return new term
-        }else error.unchecked()
+          return jsTerm;
+        } else error.unchecked()
       }, jsTerm)
     }
   }
@@ -362,7 +409,15 @@ var Reason = options => {
         let kv = Object.entries(arg);
         if (kv.length !== 1) error.internal_ctor_args();
         if (!~ctors.indexOf(kv[0][0])) error.internal_ctor_invalid(kv[0][0], ctors);
-        [this.ctor, this.value] = kv[0]
+        this.ctor = kv[0][0];
+        Object.defineProperties(this, kv[0][1].reduce((a, x, i) =>
+          Object.assign(a, {[i]: {
+            get () { return kv[0][1][i] },
+            set (v) { return kv[0][1][i] = v }
+          }}), {}
+        ));
+        this[Symbol.iterator] = () => kv[0][1].values();
+        ['map', 'every'].forEach(prop => this[prop] = (...args) => kv[0][1][prop](...args))
       }
     }
   }
@@ -370,46 +425,45 @@ var Reason = options => {
   class Term extends AST('ann', 'star', 'pi', 'lam', 'app', 'boundvar', 'freevar' ,'tcon', 'dcon', 'case') {
     equal (operand) {
       return this.ctor === operand.ctor &&
-        this.value.every((x, i) => x === operand.value[i] ||
-          ('equal' in x && x.equal(operand.value[i])) ||
-          ('every' in x && x.every((y, j) => y.equal(operand.value[i][j]))))
+        this.every((x, i) => x === operand[i] ||
+          ('equal' in x && x.equal(operand[i])) ||
+          (Array.prototype.isPrototypeOf(x) && x.every((y, j) => y.equal(operand[i][j]))))
     }
     toString () {
       switch (this.ctor) {
-        case 'ann': return `(${this.value[0].toString()} : ${this.value[1].toString()})`
+        case 'ann': return `(${this[0].toString()} : ${this[1].toString()})`
         case 'star': return 'Type'
-        case 'pi': return `${this.value[2] ? 'Erased' : ''}Pi(${this.value[0].toString()}, ${this.value[1].toString()})`
-        case 'lam': return `${this.value[1] ? 'Erased' : ''}Lam(${this.value[0].toString()})`
-        case 'app': return `${this.value[0].toString()} :@: ${this.value[1].toString()}`
-        case 'boundvar': return `Bound ${this.value[0]}`
-        case 'freevar': return `Free ${this.value[0]}`
-
-        case 'tcon': return `TC:${this.value[0].toString()}${this.value[1].map(x => ` (${x.toString()})`).join('')}`
-        case 'dcon': return `DC:${this.value[0].toString()}${this.value[1].map(x => ` ${x.toString()}`).join('')}`
-
-        case 'case': return `Case ${this.value[0].toString()} |${this.value[1].map(x => `\n  ${x.toString()}`).join('')}`
+        case 'pi': return `${this[2] ? 'Erased' : ''}Pi(${this[0].toString()}, ${this[1].toString()})`
+        case 'lam': return `${this[1] ? 'Erased' : ''}Lam(${this[0].toString()})`
+        case 'app': return `${this[0].toString()} :@: ${this[1].toString()}`
+        case 'boundvar': return `Bound ${this[0]}`
+        case 'freevar': return `Free ${this[0]}`
+        case 'tcon': return `TC:${this[0].toString()}${this[1].map(x => ` (${x.toString()})`).join('')}`
+        case 'dcon': return `DC:${this[0].toString()}${this[1].map(x => ` ${x.toString()}`).join('')}`
+        case 'case': return `Case ${this[0].toString()} |${this[1].map(x => `\n  ${x.toString()}`).join('')}`
       }
     }
+    eval () { return evaluate(this) }
   }
 
   class Name extends AST('global', 'local', 'quote') {
     equal (operand) {
-      return this.ctor === operand.ctor && this.value[0] === operand.value[0]
+      return this.ctor === operand.ctor && this[0] === operand[0]
     }
     toString () {
       switch(this.ctor) {
-        case 'global': return typeof this.value[0] === 'number' ? '_' + this.value[0] : `Global <${this.value[0]}>`
-        case 'local': return `Local ${this.value[0]}`
+        case 'global': return typeof this[0] === 'number' ? '_' + this[0] : `Global <${this[0]}>`
+        case 'local': return `Local ${this[0]}`
       } }
   }
 
   class Item extends AST('term', 'erased', 'constraint') { // TODO combine term and erased - (name, term, ep)
-    equal (operand) { return this.ctor === operand.ctor && this.value.every((x, i) => x.equal(operand.value[i]))}
+    equal (operand) { return this.ctor === operand.ctor && this.every((x, i) => x.equal(operand[i]))}
     toString () {
       switch(this.ctor) {
-        case 'term': return `(${this.value[0].toString() + ':' + this.value[1].toString()})`
-        case 'erased': return `{${this.value[0].toString() + ':' + this.value[1].toString()}}`
-        case 'constraint': return `{${this.value.map(x => x.toString()).join('=')}}`
+        case 'term': return `(${this[0].toString() + ':' + this[1].toString()})`
+        case 'erased': return `{${this[0].toString() + ':' + this[1].toString()}}`
+        case 'constraint': return `{${this.map(x => x.toString()).join('=')}}`
       }
     }
   }
@@ -443,33 +497,35 @@ var Reason = options => {
   class Decl extends AST('sig', 'def', 'recdef', 'data', 'datasig') {
     toString () {
       switch (this.ctor) {
-        case 'sig': return `SIG: ${this.value[0].toString()} : ${this.value[1].toString()}`
-        case 'def': return `DEF: ${this.value[0].toString()} := ${this.value[1].toString()}`
-        case 'data': return `DATA: ${this.value[0].toString()} ${this.value[1].toString()}` + this.value[2].map(ctor => `\n  ${ctor.toString()}`).join('')
+        case 'sig': return `SIG: ${this[0].toString()} : ${this[1].toString()}`
+        case 'def': return `DEF: ${this[0].toString()} := ${this[1].toString()}`
+        case 'data': return `DATA: ${this[0].toString()} ${this[1].toString()}` + this[2].map(ctor => `\n  ${ctor.toString()}`).join('')
       }
     }
   }
   class Ctor extends AST('ctor') {
-    toString () { return `CTOR: ${this.value[0].toString()} : ${this.value[1].toString()}` }
+    toString () { return `CTOR: ${this[0].toString()} : ${this[1].toString()}` }
   }
 
-  class Value extends AST('vlam', 'vstar', 'vpi', 'vfree', 'vtcon', 'vdcon', 'vapp', 'vcase') {}
+  class Value extends AST('vlam', 'vstar', 'vpi', 'vfree', 'vtcon', 'vdcon', 'vapp', 'vcase') {
+    quote () { return quote(this) }
+  }
 
   class Arg extends AST('arg') { // Only dcons and patdcons have Args
-    equal (operand) { return this.value[0].equal(operand.value[0]) && this.value[1] === operand.value[1] }
-    toString () { return this.value[1] ? `{${this.value[0].toString()}}` : `(${this.value[0].toString()})` }
+    equal (operand) { return this[0].equal(operand[0]) && this[1] === operand[1] }
+    toString () { return this[1] ? `{${this[0].toString()}}` : `(${this[0].toString()})` }
   }
 
   class Pat extends AST('patdcon', 'patvar') { // TODO: add inaccessible patterns
     toString () {
       switch (this.ctor) {
-        case 'patdcon': return `PatDC:${this.value[0].toString()}${this.value[1].map(x => ` (${x.value[0].toString()})`).join('')}`
-        case 'patvar': return 'PatVar ' + this.value[0].toString()
+        case 'patdcon': return `PatDC:${this[0].toString()}${this[1].map(x => ` (${x[0].toString()})`).join('')}`
+        case 'patvar': return 'PatVar ' + this[0].toString()
       }
     }
   }
   class Match extends AST('match') {
-    toString () { return `PatMatch @ ${this.value[0].toString()} := ${this.value[1].toString()}` }
+    toString () { return `PatMatch @ ${this[0].toString()} := ${this[1].toString()}` }
   }
 
 
@@ -569,8 +625,8 @@ var Reason = options => {
               return parseTerm([], 'ann')
                 .then(result => {
                   if (result.ctor !== 'ann') throw 'skip';
-                  return endTest([ new Decl({sig: [ new Name({global: [name.id]}), result.value[1] ]}),
-                    new Decl({def: [ new Name({global: [name.id]}), result.value[0] ]})])
+                  return endTest([ new Decl({sig: [ new Name({global: [name.id]}), result[1] ]}),
+                    new Decl({def: [ new Name({global: [name.id]}), result[0] ]})])
                 })
             }).catch(() => alt(() => {
               // term
@@ -924,51 +980,50 @@ var Reason = options => {
       function bracesIf (bool, string) { return bool ? `{${string}}` : string }
       function enclosureIf (bBool, pBool, string) { return bBool ? bracesIf(true, string) : parensIf(pBool, string) }
       function nestedLambda (body, eps, index) { return body.ctor === 'lam' ?
-        nestedLambda(body.value[0], eps.concat([body.value[1]]), index + 1) :
+        nestedLambda(body[0], eps.concat([body[1]]), index + 1) :
         Array.from(Array(index), (_, i) => bracesIf(eps[i], vars(i))).join(', ') + ' => ' + recPrint(body, 0, index) }
       function nestedPi (range, domain, eps, index) { return domain.ctor === 'pi' ?
-        nestedPi([[domain.value[0], index]].concat(range), domain.value[1], eps.concat([domain.value[2]]), step(index + 1)) :
+        nestedPi([[domain[0], index]].concat(range), domain[1], eps.concat([domain[2]]), step(index + 1)) :
         range.reverse().map(([tm, i], j) => enclosureIf(eps[j], true, `[${i}]` + recPrint(tm, 1, i)) + ' -> ').join('') + recPrint(domain, 0, index) }
       if (testObj(Term)) {
         switch (obj.ctor) {
           case 'star': return 'Type'
-          case 'ann': return parensIf(int1 > 1, recPrint(obj.value[0], 2, int2) + ' : ' + recPrint(obj.value[1], 0, int2))
-          case 'pi': return obj.value[1].ctor === 'pi' ?
-            parensIf(int1 > 1, nestedPi([[obj.value[1].value[0], step(int2 + 1)], [obj.value[0], int2]],
-              obj.value[1].value[1], [obj.value[2], obj.value[1].value[2]], step(int2 + 2))) :
-            parensIf(true, bracesIf(obj.value[2], `[${int2}]` + recPrint(obj.value[0], 0, int2)) + ' -> ' + recPrint(obj.value[1], 0, step(int2 + 1)))
-          case 'lam': return parensIf(int1 > 0, obj.value[0].ctor === 'lam' ?
-            nestedLambda(obj.value[0].value[0], [obj.value[1], obj.value[0].value[1]], int2 + 2) :
-            bracesIf(obj.value[1], vars(int2)) + ' => ' + recPrint(obj.value[0], 0, int2 + 1))
-          case 'app': return parensIf(int1 > 2, recPrint(obj.value[0], 2, int2) + ' ' + bracesIf(obj.value[2], recPrint(obj.value[1], 2, int2)))
-          case 'boundvar': anns[int2 - obj.value[0] - 1] = 1; return vars(int2 - obj.value[0] - 1)
-          case 'freevar': return recPrint(obj.value[0], 0, int2)
-          case 'tcon': return parensIf(int1 > 2, recPrint(obj.value[0], 0, int2) + obj.value[1].map(tm => ' ' + recPrint(tm, 3, int2)).join(''))
-          case 'dcon': return parensIf(int1 > 1 + !obj.value[1].length, recPrint(obj.value[0], 0, int2) +
-            obj.value[1].map(arg => ' ' + (arg.value[1] ? `{${recPrint(arg.value[0], 3, int2)}}` : recPrint(arg.value[0], 3, int2))).join(''))
-          case 'case': return recPrint(obj.value[0], 0, int2) + ' |' +
-            obj.value[1].map(match => '\n  ' + recPrint(match.value[0], 0, int2) + ' := ' + recPrint(match.value[1], 0, int2))
+          case 'ann': return parensIf(int1 > 1, recPrint(obj[0], 2, int2) + ' : ' + recPrint(obj[1], 0, int2))
+          case 'pi': return obj[1].ctor === 'pi' ?
+            parensIf(int1 > 1, nestedPi([[obj[1][0], step(int2 + 1)], [obj[0], int2]], obj[1][1], [obj[2], obj[1][2]], step(int2 + 2))) :
+            parensIf(true, bracesIf(obj[2], `[${int2}]` + recPrint(obj[0], 0, int2)) + ' -> ' + recPrint(obj[1], 0, step(int2 + 1)))
+          case 'lam': return parensIf(int1 > 0, obj[0].ctor === 'lam' ?
+            nestedLambda(obj[0][0], [obj[1], obj[0][1]], int2 + 2) :
+            bracesIf(obj[1], vars(int2)) + ' => ' + recPrint(obj[0], 0, int2 + 1))
+          case 'app': return parensIf(int1 > 2, recPrint(obj[0], 2, int2) + ' ' + bracesIf(obj[2], recPrint(obj[1], 2, int2)))
+          case 'boundvar': anns[int2 - obj[0] - 1] = 1; return vars(int2 - obj[0] - 1)
+          case 'freevar': return recPrint(obj[0], 0, int2)
+          case 'tcon': return parensIf(int1 > 2, recPrint(obj[0], 0, int2) + obj[1].map(tm => ' ' + recPrint(tm, 3, int2)).join(''))
+          case 'dcon': return parensIf(int1 > 1 + !obj[1].length, recPrint(obj[0], 0, int2) +
+            obj[1].map(arg => ' ' + (arg[1] ? `{${recPrint(arg[0], 3, int2)}}` : recPrint(arg[0], 3, int2))).join(''))
+          case 'case': return recPrint(obj[0], 0, int2) + ' |' +
+            obj[1].map(match => '\n  ' + recPrint(match[0], 0, int2) + ' := ' + recPrint(match[1], 0, int2))
         }
       } else if (testObj(Name)) {
         switch (obj.ctor) {
-          case 'global': return obj.value[0]
-          case 'local': return typeof (obj.value[0]) === 'number' ? vars(obj.value[0]) : obj.value[0]
+          case 'global': return typeof obj[0] === 'number' ? '_' + obj[0] : obj[0]
+          case 'local': return typeof obj[0] === 'number' ? vars(obj[0]) : obj[0]
         }
       } else if (testObj(Pat)) {
         switch (obj.ctor) {
-          case 'patvar': return recPrint(obj.value[0], 0, int2)
-          case 'patdcon': return parensIf(int1 > 1, recPrint(obj.value[0], 0, int2) +
-          obj.value[1].map(arg => ' ' + (arg.value[1] ? `{${recPrint(arg.value[0], 1, int2)}}` : recPrint(arg.value[0], 1, int2))).join(''))
+          case 'patvar': return recPrint(obj[0], 0, int2)
+          case 'patdcon': return parensIf(int1 > 1, recPrint(obj[0], 0, int2) +
+          obj[1].map(arg => ' ' + (arg[1] ? `{${recPrint(arg[0], 1, int2)}}` : recPrint(arg[0], 1, int2))).join(''))
         }
       } else if (testObj(Tele)) {
         return (obj.items.length - 1 ? ' ' : '') + obj.items.slice(0, -1).map(item => {
           switch (item.ctor) {
-            case 'term': return `(${recPrint(item.value[0], 0, int2) + ' : ' + recPrint(item.value[1], 0, int2)})`
-            case 'erased': return `{${recPrint(item.value[0], 0, int2) + ' : ' + recPrint(item.value[1], 0, int2)}}`
-            case 'constraint': return `{${recPrint(item.value[0], 0, int2) + ' = ' + recPrint(item.value[1], 0, int2)}}`
+            case 'term': return `(${recPrint(item[0], 0, int2) + ' : ' + recPrint(item[1], 0, int2)})`
+            case 'erased': return `{${recPrint(item[0], 0, int2) + ' : ' + recPrint(item[1], 0, int2)}}`
+            case 'constraint': return `{${recPrint(item[0], 0, int2) + ' = ' + recPrint(item[1], 0, int2)}}`
           }
-        }).join('') + ' : ' + recPrint(obj.items.slice(-1)[0].value[1], 1, int2)
-      } else if (testObj(Ctor)) { return recPrint(obj.value[0]) + recPrint(obj.value[1]) }
+        }).join('') + ' : ' + recPrint(obj.items.slice(-1)[0][1], 1, int2)
+      } else if (testObj(Ctor)) { return recPrint(obj[0]) + recPrint(obj[1]) }
     })(o);
     return preString.replace(/\[(\d{1,3})\]/g, (_, m) => (anns[m] ? vars(anns.slice(0, m + 1).reduce((a, b) => a + b) - 1) + ' : ' : ''))
   }
@@ -985,18 +1040,18 @@ var Reason = options => {
       if (ctor === 'ctor') {
         let mbCdef;
         if (typeof annot === 'undefined') return this.decls.reduce((a, decl) => {
-          if (decl.ctor === 'data' && (mbCdef = decl.value[2].find(cdef => cdef.value[0].equal(name))))
-            a.push({tname: decl.value[0], ddef: decl.value[1], cdef: mbCdef.value[1]});
+          if (decl.ctor === 'data' && (mbCdef = decl[2].find(cdef => cdef[0].equal(name))))
+            a.push({tname: decl[0], ddef: decl[1], cdef: mbCdef[1]});
           return a
         }, []);
         else {
-          let mbDdef = this.decls.find(decl => decl.ctor === 'data' && decl.value[0].equal(annot) &&
-            (mbCdef = decl.value[2].find(cdef => cdef.value[0].equal(name))));
-          return { ddef: mbDdef ? mbDdef.value[1] : null, cdef: mbCdef ? mbCdef.value[1] : null }
+          let mbDdef = this.decls.find(decl => decl.ctor === 'data' && decl[0].equal(annot) &&
+            (mbCdef = decl[2].find(cdef => cdef[0].equal(name))));
+          return { ddef: mbDdef ? mbDdef[1] : null, cdef: mbCdef ? mbCdef[1] : null }
         }
       }
-      let result = this.decls.find(decl => (decl.ctor === ctor || (ctor === 'data' && decl.ctor === 'datasig')) && decl.value[0].equal(name));
-      if (result) return ctor === 'data' ? { ddef: result.value[1], cdef: result.ctor === 'datasig' ? null : result.value[2] } : result.value[1]
+      let result = this.decls.find(decl => (decl.ctor === ctor || (ctor === 'data' && decl.ctor === 'datasig')) && decl[0].equal(name));
+      if (result) return ctor === 'data' ? { ddef: result[1], cdef: result.ctor === 'datasig' ? null : result[2] } : result[1]
     }
     cons (decl) { return this.push(decl, true) }
     extend (decl) { return this.push(decl, false) }
@@ -1005,23 +1060,67 @@ var Reason = options => {
       if (!Array.prototype.isPrototypeOf(decl)) decl = [decl];
       else if (!decl.length) return ret;
       let d = decl.shift(),
-          i = (d.value[0].value[0] === '') ? -1 : ret.decls.findIndex(x => x.value[0].value[0] === '');
+          i = (d[0][0] === '') ? -1 : ret.decls.findIndex(x => x[0][0] === '');
       ret.decls.splice(i === -1 ? ret.decls.length : i, 0, d);
       return decl.length ? ret.push(decl, false) : ret
     }
-    localVal (i) { return this.decls[this.decls.length - i - 1].value[1] }
+    localVal (i) { return this.decls[this.decls.length - i - 1][1] }
     concatTele (tele) {
       return tele.items.reduce((acc, item) => { switch (item.ctor) {
-        case 'term': case 'erased': return acc.cons(new Decl({sig: [item.value[0].value[0], item.value[1]]}))
-        case 'constraint': return acc.cons({def: item.value})
+        case 'term': case 'erased': return acc.cons(new Decl({sig: [item[0][0], item[1]]}))
+        case 'constraint': return acc.cons({def: [...item]})
       } }, new Context(this))
     }
   }
   const context = new Context();
 
-  function typecheck (decls) {
-    Value.prototype.quote = function () { return quote(this) };
+  // Values
+  function evaluate (term, ctx = context) {
+    let mbVal, vscrut, local = x => new Decl({sig: [ new Name({global: ['']}), x ]});
+    switch (term.ctor) {
+      case 'star': return new Value({vstar: []})
+      case 'ann': return evaluate(term[0], ctx)
+      case 'pi': return new Value({vpi: [ evaluate(term[0], ctx), x => evaluate(term[1], ctx.cons(local(x))), term[2] ]})
+      case 'lam': return new Value({vlam: [ x => evaluate(term[0], ctx.cons(local(x))), term[1] ]})
+      case 'app': return vapply(evaluate(term[0], ctx), evaluate(term[1], ctx), term[2])
+      case 'boundvar': return ctx.localVal(term[0])
+      case 'freevar': return (mbVal = ctx.lookup(term[0], 'def')) ? mbVal : new Value({vfree: [term[0]]})
+      case 'tcon': return new Value({vtcon: [ term[0], term[1].map(tm => evaluate(tm, ctx)) ]})
+      case 'dcon': return new Value({vdcon: [ term[0], term[1].map(arg => new Arg({arg: [ evaluate(arg[0], ctx), arg[1] ]})) ].concat([term[2]].filter(x => x))})
 
+      case 'case': switch ((vscrut = evaluate(term[0], ctx)).ctor) {
+        case 'vfree': return new Value({vcase: [ vscrut, term[1].map(x => new Match({match: [ x[0], evaluate(x[1], ctx) ]})) ]});
+        case 'vdcon':
+        let match = term[1].find(match => quote(vscrut)[0].equal(match[0][0])),
+            decls = match[0][1].map((x, i) => new Decl({def: [x[0][0], vscrut[1][i][0]]})); // TODO: map/x is not always a patvar
+        return evaluate(match[1], ctx.cons(decls))
+      }
+    }
+  }
+
+  function vapply (value1, value2, epsilon) {
+    switch (value1.ctor) {
+      case 'vlam': return value1[0](value2)
+      case 'vapp': case 'vtcon': case 'vdcon': case 'vfree': return new Value({vapp: [ value1, value2, epsilon ]})
+      default: error.tc_bad_app()
+    }
+  }
+
+  function quote (value, index = 0) {
+    let name, qname = new Name({quote: [index]});
+    switch (value.ctor) {
+      case 'vstar': return new Term({star: []})
+      case 'vpi': return new Term({pi: [ quote(value[0], index), quote(value[1](new Value({vfree: [qname]})), index + 1), value[2]]})
+      case 'vlam': return new Term({lam: [ quote(value[0](new Value({vfree: [qname]})), index + 1), value[1] ]})
+      case 'vfree': return (name = value[0]).ctor === 'quote' ? new Term({boundvar: [index - name[0] - 1]}) : new Term({freevar: [name]})
+      case 'vtcon': return new Term({tcon: [ value[0], value[1].map(v => quote(v, index)) ]})
+      case 'vdcon': return new Term({dcon: [ value[0], value[1].map(arg => new Arg({arg: [ quote(arg[0], index), arg[1] ]})) ].concat([value[2]].filter(x => x))})
+      case 'vapp': return new Term({app: [ quote(value[0], index), quote(value[1], index), value[2] ]})
+      case 'vcase': return new Term({case: [ quote(value[0]), value[1].map(match => new Match({match: [ match[0], quote(match[1]) ]})) ]})
+    }
+  }
+
+  function typecheck (decls) {
     // Infer/check
     function infer (args) { //context, term, number -> value
       let { ctx, term, index = 0 } = args, innerArgs;
@@ -1031,60 +1130,60 @@ var Reason = options => {
           case 'star': return vstar
 
           case 'ann':
-          let annTerm = term.value[0];
-          return check(ctx, term.value[1], vstar, index)
+          let annTerm = term[0];
+          return check(ctx, term[1], vstar, index)
             .catch(e => error.append(e.message, 'tc_ann_mismatch', '?'))
             .then(({term}) => check(ctx, annTerm, evaluate(term, ctx), index))
             .then(({type})=> type)
 
-          case 'pi': return infer(innerArgs = {ctx, term: term.value[0], index})
+          case 'pi': return infer(innerArgs = {ctx, term: term[0], index})
             .then(type1 => {
-              term.value[0] = innerArgs.term;
+              term[0] = innerArgs.term;
               if (type1.ctor !== 'vstar') error.tc_pi_mismatch('domain', quote(type1));
               return infer(innerArgs = {
-                ctx: ctx.cons(new Decl({sig: [ local, evaluate(term.value[0], ctx) ]})),
-                term: subst(new Term({freevar: [ local ]}), term.value[1], false), index: index + 1})
+                ctx: ctx.cons(new Decl({sig: [ local, evaluate(term[0], ctx) ]})),
+                term: subst(new Term({freevar: [ local ]}), term[1], false), index: index + 1})
                 .then(type2 => {
-                  args.term = new Term({pi: [term.value[0], unsubst(new Term({boundvar: [ index ]}), innerArgs.term), term.value[2]]});
+                  args.term = new Term({pi: [term[0], unsubst(new Term({boundvar: [ index ]}), innerArgs.term), term[2]]});
                   if (type2.ctor !== 'vstar') error.tc_pi_mismatch('range', quote(type2));
                   return vstar
                 })
             })
 
-          case 'app': return infer(innerArgs = {ctx, term: term.value[0], index})
+          case 'app': return infer(innerArgs = {ctx, term: term[0], index})
             .then(type => {
-              term.value[0] = innerArgs.term;
+              term[0] = innerArgs.term;
               if (type.ctor !== 'vpi') error.tc_app_mismatch(quote(type));
-              let [dom, func] = type.value;
-              return check(ctx, term.value[1], dom, index)
+              let [dom, func] = type;
+              return check(ctx, term[1], dom, index)
                 .then(({term}) => func(evaluate(term, ctx)))
             })
 
           case 'freevar':
-          if (result = ctx.lookup(term.value[0], 'sig')) return result
-          error.tc_unknown_id(term.value[0])
+          if (result = ctx.lookup(term[0], 'sig')) return result
+          error.tc_unknown_id(term[0])
 
           case 'tcon':
-          if (term.value.length === 1) term.value.push([]) //?
-          result = ctx.lookup(term.value[0], 'data').ddef;
-          if (result.items.length - 1 > term.value[1].length) error.tc_dcon_arg_len(term.value[1].length, result.items.length - 1);
-          else if (result.items.length - 1 < term.value[1].length)
-            return infer({ctx, term: args.term = term.value[1].slice(result.items.length - 1).reduce((acc, tm) => new Term({app: [acc, tm, false]}),
-              new Term({tcon: [term.value[0], term.value[1].slice(0, result.items.length - 1)]})), index});
-          return tcArgTele(ctx, term.value[1].map(x => new Arg({arg: [x, false]})), result.items.slice(0, -1)).then(() => result.items.slice(-1)[0].value[1])
+          if (term.length === 1) term.push([]) //?
+          result = ctx.lookup(term[0], 'data').ddef;
+          if (result.items.length - 1 > term[1].length) error.tc_dcon_arg_len(term[1].length, result.items.length - 1);
+          else if (result.items.length - 1 < term[1].length)
+            return infer({ctx, term: args.term = term[1].slice(result.items.length - 1).reduce((acc, tm) => new Term({app: [acc, tm, false]}),
+              new Term({tcon: [term[0], term[1].slice(0, result.items.length - 1)]})), index});
+          return tcArgTele(ctx, term[1].map(x => new Arg({arg: [x, false]})), result.items.slice(0, -1)).then(() => result.items.slice(-1)[0][1])
 
           case 'dcon':
-          if (typeof term.value[2] !== 'undefined') return check(ctx, term, term.value[2], index);
-          if (term.value.length === 1) term.value.push([]) //?
-          let matches = ctx.lookup(term.value[0], 'ctor');
+          if (typeof term[2] !== 'undefined') return check(ctx, term, term[2], index);
+          if (term.length === 1) term.push([]) //?
+          let matches = ctx.lookup(term[0], 'ctor');
           if (matches.length !== 1) error.tc_dcon_ambiguity();
           let match = matches[0];
           if (match.ddef.length !== 1) error.tc_dcon_cannot_infer_params();
-          if (match.cdef.length - 1 > term.value[1].length) error.tc_dcon_arg_len(term.value[1].length, match.cdef.length - 1);
-          else if (match.cdef.length - 1 < term.value[1].length)
-            return infer({ctx, term: args.term = term.value[1].slice(match.cdef.length - 1).reduce((acc, tm) => new Term({app: [acc, ...tm.value]}),
-              new Term({dcon: [term.value[0], term.value[1].slice(0, match.cdef.length - 1)].concat([term.value[2]].filter(x => x))})), index});
-          return tcArgTele(ctx, term.value[1], match.cdef.items.slice(0, -1)).then(() => evaluate(new Term({tcon: [ match.tname, [] ]}), ctx))
+          if (match.cdef.length - 1 > term[1].length) error.tc_dcon_arg_len(term[1].length, match.cdef.length - 1);
+          else if (match.cdef.length - 1 < term[1].length)
+            return infer({ctx, term: args.term = term[1].slice(match.cdef.length - 1).reduce((acc, tm) => new Term({app: [acc, ...tm]}),
+              new Term({dcon: [term[0], term[1].slice(0, match.cdef.length - 1)].concat([term[2]].filter(x => x))})), index});
+          return tcArgTele(ctx, term[1], match.cdef.items.slice(0, -1)).then(() => evaluate(new Term({tcon: [ match.tname, [] ]}), ctx))
 
           case 'lam': error.tc_lam_infer()
 
@@ -1099,41 +1198,41 @@ var Reason = options => {
         switch (term.ctor) {
           case 'lam':
           if (typeVal.ctor !== 'vpi') error.tc_lam_mismatch(typeVal.ctor);
-          if (term.value[1] !== typeVal.value[2]) error.tc_erasure_mismatch();
+          if (term[1] !== typeVal[2]) error.tc_erasure_mismatch();
           else {
             let local = new Name({local: [index]});
             return check(
-              ctx.cons(new Decl({sig: [ local, typeVal.value[0] ]})),
-              subst(new Term({freevar: [ local ]}), term.value[0], false),
-              typeVal.value[1](new Value({vfree: [local]})), index + 1)
-              .then(({term}) => ({term: new Term({lam: [unsubst(new Term({boundvar: [ index ]}), term), typeVal.value[2]]}), type: typeVal}))
+              ctx.cons(new Decl({sig: [ local, typeVal[0] ]})),
+              subst(new Term({freevar: [ local ]}), term[0], false),
+              typeVal[1](new Value({vfree: [local]})), index + 1)
+              .then(({term}) => ({term: new Term({lam: [unsubst(new Term({boundvar: [ index ]}), term), typeVal[2]]}), type: typeVal}))
           }
 
           case 'dcon':
           let type = quote(typeVal);
-          if (typeof term.value[2] !== 'undefined' && 'equal' in term.value[2] && !term.value[2].equal(type)) error.tc_mismatch(term.value[2], type, term);
-          if (term.value.length === 1) term.value.push([]) //?
-          let match = ctx.lookup(term.value[0], 'ctor', type.value[0]);
-          if (match.cdef.length - 1 > term.value[1].length) error.tc_dcon_arg_len(term.value[1].length, match.cdef.length - 1);
-          if (match.cdef.length - 1 < term.value[1].length)
-            return check(ctx, term.value[1].slice(match.cdef.length - 1).reduce((acc, tm) => new Term({app: [acc, ...tm.value]}),
-              new Term({dcon: [term.value[0], term.value[1].slice(0, match.cdef.length - 1)].concat([term.value[2]].filter(x => x))})), typeVal, index);
-          let items = substTele(ctx, match.ddef.tail(), type.value[1], match.cdef);
-          return tcArgTele(ctx, term.value[1], items.slice(0, -1)).then(args => ({ term: new Term({dcon: [ term.value[0], args, typeVal ]}), type: typeVal }))
+          if (typeof term[2] !== 'undefined' && 'equal' in term[2] && !term[2].equal(type)) error.tc_mismatch(term[2], type, term);
+          if (term.length === 1) term.push([]) //?
+          let match = ctx.lookup(term[0], 'ctor', type[0]);
+          if (match.cdef.length - 1 > term[1].length) error.tc_dcon_arg_len(term[1].length, match.cdef.length - 1);
+          if (match.cdef.length - 1 < term[1].length)
+            return check(ctx, term[1].slice(match.cdef.length - 1).reduce((acc, tm) => new Term({app: [acc, ...tm]}),
+              new Term({dcon: [term[0], term[1].slice(0, match.cdef.length - 1)].concat([term[2]].filter(x => x))})), typeVal, index);
+          let items = substTele(ctx, match.ddef.tail(), type[1], match.cdef);
+          return tcArgTele(ctx, term[1], items.slice(0, -1)).then(args => ({ term: new Term({dcon: [ term[0], args, typeVal ]}), type: typeVal }))
 
-          case 'case': return infer(innerArgs = {ctx, term: term.value[0], index})
+          case 'case': return infer(innerArgs = {ctx, term: term[0], index})
             .then(type => {
-              term.value[0] = innerArgs.term;
+              term[0] = innerArgs.term;
               let typeTerm = quote(type);
-              if (typeTerm.ctor !== 'tcon' && typeTerm.ctor !== 'app') error.tc_mismatch(typeTerm, 'Type Constructor', term.value[0]);
-              return term.value[1].reduce((p, match) => p.then(acc => {
-                let [decls1, evars] = declarePat(ctx, match.value[0], false, typeTerm),
-                    decls2 = equateWithPat(ctx, term.value[0], match.value[0], typeTerm);
-                return check(ctx.cons(decls1.concat(decls2)), match.value[1], typeVal, index)
-                  .then(({term}) => acc.concat([new Match({match: [match.value[0], term]})]))
+              if (typeTerm.ctor !== 'tcon' && typeTerm.ctor !== 'app') error.tc_mismatch(typeTerm, 'Type Constructor', term[0]);
+              return term[1].reduce((p, match) => p.then(acc => {
+                let [decls1, evars] = declarePat(ctx, match[0], false, typeTerm),
+                    decls2 = equateWithPat(ctx, term[0], match[0], typeTerm);
+                return check(ctx.cons(decls1.concat(decls2)), match[1], typeVal, index)
+                  .then(({term}) => acc.concat([new Match({match: [match[0], term]})]))
               }), Promise.resolve([]))
-                .then(matches => exhaustivityCheck(ctx, term.value[0], typeTerm, term.value[1].map(x => x.value[0]))
-                  .then(() => ({term: new Term({case: [term.value[0], matches, typeVal]}), type: typeVal})))
+                .then(matches => exhaustivityCheck(ctx, term[0], typeTerm, term[1].map(x => x[0]))
+                  .then(() => ({term: new Term({case: [term[0], matches, typeVal]}), type: typeVal})))
             })
 
           default: return infer(innerArgs = {ctx, term, index})
@@ -1149,99 +1248,48 @@ var Reason = options => {
     // Terms
     function subst (term1, term2, ep, index = 0) {
       switch (term2.ctor) {
-        case 'ann': return new Term({ann: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index) ]})
-        case 'pi': return new Term({pi: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index + 1), term2.value[2] ]})
-        case 'lam': return new Term({lam: [ subst(term1, term2.value[0], ep, index + 1), term2.value[1] ]})
-        case 'app': return new Term({app: [ subst(term1, term2.value[0], ep, index), subst(term1, term2.value[1], ep, index), term2.value[2] ]})
-        case 'boundvar': return index !== term2.value[0] ? term2 : !ep ? term1 : error.tc_erased_var_subst()
-        case 'tcon': return new Term({tcon: [ term2.value[0], term2.value[1].map(tm => subst(term1, tm, ep, index)) ]})
-        case 'dcon': return new Term({dcon: [ term2.value[0],
-          term2.value[1].map(arg => new Arg({arg: [ subst(term1, arg.value[0], ep, index), arg.value[1]]})) ].concat([term2.value[2]].filter(x => x))})
-        case 'case': return new Term({case: [ subst(term1, term2.value[0], ep, index),
-          term2.value[1].map(match => new Match({match: [ match.value[0], subst(term1, match.value[1], ep, index) ]})) ].concat([term2.value[2]].filter(x => x))})
+        case 'ann': return new Term({ann: [ subst(term1, term2[0], ep, index), subst(term1, term2[1], ep, index) ]})
+        case 'pi': return new Term({pi: [ subst(term1, term2[0], ep, index), subst(term1, term2[1], ep, index + 1), term2[2] ]})
+        case 'lam': return new Term({lam: [ subst(term1, term2[0], ep, index + 1), term2[1] ]})
+        case 'app': return new Term({app: [ subst(term1, term2[0], ep, index), subst(term1, term2[1], ep, index), term2[2] ]})
+        case 'boundvar': return index !== term2[0] ? term2 : !ep ? term1 : error.tc_erased_var_subst()
+        case 'tcon': return new Term({tcon: [ term2[0], term2[1].map(tm => subst(term1, tm, ep, index)) ]})
+        case 'dcon': return new Term({dcon: [ term2[0],
+          term2[1].map(arg => new Arg({arg: [ subst(term1, arg[0], ep, index), arg[1]]})) ].concat([term2[2]].filter(x => x))})
+        case 'case': return new Term({case: [ subst(term1, term2[0], ep, index),
+          term2[1].map(match => new Match({match: [ match[0], subst(term1, match[1], ep, index) ]})) ].concat([term2[2]].filter(x => x))})
         case 'star': case 'freevar': return term2
       }
     }
     function unsubst (term1, term2, index = 0) {
       switch (term2.ctor) {
-        case 'ann': return new Term({ann: [ unsubst(term1, term2.value[0], index), unsubst(term1, term2.value[1], index) ]})
-        case 'pi': return new Term({pi: [ unsubst(term1, term2.value[0], index), unsubst(term1, term2.value[1], index + 1), term2.value[2] ]})
-        case 'lam': return new Term({lam: [ unsubst(term1, term2.value[0], index + 1), term2.value[1] ]})
-        case 'app': return new Term({app: [ unsubst(term1, term2.value[0], index), unsubst(term1, term2.value[1], index), term2.value[2] ]})
-        case 'freevar': return term2.value[0].ctor === 'local' && index === term2.value[0].value[0] ? term1 : term2
-        case 'tcon': return new Term({tcon: [ term2.value[0], term2.value[1].map(tm => unsubst(term1, tm, index)) ]})
-        case 'dcon': return new Term({dcon: [ term2.value[0],
-          term2.value[1].map(arg => new Arg({arg: [ unsubst(term1, arg.value[0], index), arg.value[1]]})) ].concat([term2.value[2]].filter(x => x))})
-        case 'case': return new Term({case: [ unsubst(term1, term2.value[0], index),
-          term2.value[1].map(match => new Match({match: [ match.value[0], unsubst(term1, match.value[1], index) ]})) ].concat([term2.value[2]].filter(x => x))})
+        case 'ann': return new Term({ann: [ unsubst(term1, term2[0], index), unsubst(term1, term2[1], index) ]})
+        case 'pi': return new Term({pi: [ unsubst(term1, term2[0], index), unsubst(term1, term2[1], index + 1), term2[2] ]})
+        case 'lam': return new Term({lam: [ unsubst(term1, term2[0], index + 1), term2[1] ]})
+        case 'app': return new Term({app: [ unsubst(term1, term2[0], index), unsubst(term1, term2[1], index), term2[2] ]})
+        case 'freevar': return term2[0].ctor === 'local' && index === term2[0][0] ? term1 : term2
+        case 'tcon': return new Term({tcon: [ term2[0], term2[1].map(tm => unsubst(term1, tm, index)) ]})
+        case 'dcon': return new Term({dcon: [ term2[0],
+          term2[1].map(arg => new Arg({arg: [ unsubst(term1, arg[0], index), arg[1]]})) ].concat([term2[2]].filter(x => x))})
+        case 'case': return new Term({case: [ unsubst(term1, term2[0], index),
+          term2[1].map(match => new Match({match: [ match[0], unsubst(term1, match[1], index) ]})) ].concat([term2[2]].filter(x => x))})
         case 'star': case 'boundvar': return term2
       }
     }
 
     function substFV (term1, term2, name) {
       switch (term2.ctor) {
-        case 'ann': return new Term({ann: [ substFV(term1, term2.value[0], name), substFV(term1, term2.value[1], name) ]})
-        case 'pi': return new Term({pi: [ substFV(term1, term2.value[0], name), substFV(term1, term2.value[1], name), term2.value[2] ]})
-        case 'lam': return new Term({lam: [ substFV(term1, term2.value[0], name), term2.value[1] ]})
-        case 'app': return new Term({app: [ substFV(term1, term2.value[0], name), substFV(term1, term2.value[1], name), term2.value[2] ]})
+        case 'ann': return new Term({ann: [ substFV(term1, term2[0], name), substFV(term1, term2[1], name) ]})
+        case 'pi': return new Term({pi: [ substFV(term1, term2[0], name), substFV(term1, term2[1], name), term2[2] ]})
+        case 'lam': return new Term({lam: [ substFV(term1, term2[0], name), term2[1] ]})
+        case 'app': return new Term({app: [ substFV(term1, term2[0], name), substFV(term1, term2[1], name), term2[2] ]})
         case 'freevar': return name.equal(term2) ? term1 : term2
-        case 'tcon': return new Term({tcon: [ term2.value[0], term2.value[1].map(tm => substFV(term1, tm, name)) ]})
-        case 'dcon': return new Term({dcon: [ term2.value[0],
-          term2.value[1].map(arg => new Arg({arg: [ substFV(term1, arg.value[0], name), arg.value[1]]})) ].concat([term2.value[2]].filter(x => x))})
-        case 'case': return new Term({case: [ substFV(term1, term2.value[0], name),
-          term2.value[1].map(match => new Match({match: [ match.value[0], substFV(term1, match.value[1], name) ]})) ]})
+        case 'tcon': return new Term({tcon: [ term2[0], term2[1].map(tm => substFV(term1, tm, name)) ]})
+        case 'dcon': return new Term({dcon: [ term2[0],
+          term2[1].map(arg => new Arg({arg: [ substFV(term1, arg[0], name), arg[1]]})) ].concat([term2[2]].filter(x => x))})
+        case 'case': return new Term({case: [ substFV(term1, term2[0], name),
+          term2[1].map(match => new Match({match: [ match[0], substFV(term1, match[1], name) ]})) ]})
         case 'star': case 'boundvar': return term2
-      }
-    }
-
-    // Values
-    function evaluate (term, ctx) {
-      let mbVal, vscrut, local = x => new Decl({sig: [ new Name({global: ['']}), x ]});
-      switch (term.ctor) {
-        case 'star': return new Value({vstar: []})
-        case 'ann': return evaluate(term.value[0], ctx)
-        case 'pi': return new Value({vpi: [ evaluate(term.value[0], ctx), x => evaluate(term.value[1], ctx.cons(local(x))), term.value[2] ]})
-        case 'lam': return new Value({vlam: [ x => evaluate(term.value[0], ctx.cons(local(x))), term.value[1] ]})
-        case 'app': return vapply(evaluate(term.value[0], ctx), evaluate(term.value[1], ctx), term.value[2])
-        case 'boundvar': return ctx.localVal(term.value[0])
-        case 'freevar': return (mbVal = ctx.lookup(term.value[0], 'def')) ? mbVal : new Value({vfree: [term.value[0]]})
-        case 'tcon': return new Value({vtcon: [ term.value[0], term.value[1].map(tm => evaluate(tm, ctx)) ]})
-        case 'dcon': return new Value({vdcon: [ term.value[0],
-          term.value[1].map(arg => new Arg({arg: [ evaluate(arg.value[0], ctx), arg.value[1] ]})) ].concat([term.value[2]].filter(x => x))})
-
-        case 'case': switch ((vscrut = evaluate(term.value[0], ctx)).ctor) {
-          case 'vfree': return new Value({vcase: [ vscrut, term.value[1].map(x => new Match({match: [ x.value[0], evaluate(x.value[1], ctx) ]})) ]});
-          case 'vdcon':
-          let match = term.value[1].find(match => quote(vscrut).value[0].equal(match.value[0].value[0])),
-              decls = match.value[0].value[1].map((x, i) => new Decl({def: [x.value[0].value[0], vscrut.value[1][i].value[0]]})); // TODO: map/x is not always a patvar
-          return evaluate(match.value[1], ctx.cons(decls))
-        }
-      }
-    }
-
-    function vapply (value1, value2, epsilon) {
-      switch (value1.ctor) {
-        case 'vlam': return value1.value[0](value2)
-        case 'vapp': case 'vtcon': case 'vdcon': case 'vfree': return new Value({vapp: [ value1, value2, epsilon ]})
-        default: error.tc_bad_app()
-      }
-    }
-
-    function quote (value, index = 0) {
-      let name, qname = new Name({quote: [index]});
-      switch (value.ctor) {
-        case 'vstar': return new Term({star: []})
-        case 'vpi': return new Term({pi: [ quote(value.value[0], index), quote(value.value[1](new Value({vfree: [qname]})), index + 1), value.value[2]]})
-        case 'vlam': return new Term({lam: [ quote(value.value[0](new Value({vfree: [qname]})), index + 1), value.value[1] ]})
-        case 'vfree': return (name = value.value[0]).ctor === 'quote' ?
-          new Term({boundvar: [index - name.value[0] - 1]}) :
-          new Term({freevar: [name]})
-        case 'vtcon': return new Term({tcon: [ value.value[0], value.value[1].map(v => quote(v, index)) ]})
-        case 'vdcon': return new Term({dcon: [ value.value[0],
-          value.value[1].map(arg => new Arg({arg: [ quote(arg.value[0], index), arg.value[1] ]})) ].concat([value.value[2]].filter(x => x))})
-        case 'vapp': return new Term({app: [ quote(value.value[0], index), quote(value.value[1], index), value.value[2] ]})
-        case 'vcase': return new Term({case: [ quote(value.value[0]),
-          value.value[1].map(match => new Match({match: [ match.value[0], quote(match.value[1]) ]})) ]})
       }
     }
 
@@ -1250,15 +1298,15 @@ var Reason = options => {
       return tele.items.reduce((p, item) => p.then(acc => {
         switch (item.ctor) {
           case 'term': case 'erased':
-          let [name, type] = item.value;
+          let [name, type] = item;
           return check(ctx, type, new Value({vstar: []}))
             .then(({term}) => ctx.extend(new Decl({sig: [ name, type = evaluate(term, ctx) ]})))
             .then(() => acc.concat([new Item({[item.ctor]: [ new Term({freevar: [name]}), type ]})]))
 
           case 'constraint':
-          return infer({ctx, term: item.value[0]})
-            .then(type => check(ctx, item.value[1]), type)
-            .then(({term}) => constraintToDecls(ctx, item.value[0], item.value[1] = term))
+          return infer({ctx, term: item[0]})
+            .then(type => check(ctx, item[1]), type)
+            .then(({term}) => constraintToDecls(ctx, item[0], item[1] = term))
             .then(decls => decls.forEach(decl => ctx.extend(decl)))
             .then(() => acc.concat([item]))
         }
@@ -1269,10 +1317,10 @@ var Reason = options => {
       let decls = [];
       if (term1.equal(term2)) return decls;
       if (term1.ctor === 'app' && term2.ctor === 'app') decls = decls
-        .concat(constraintToDecls(ctx, term1.value[0], term2.value[0]))
-        .concat(constraintToDecls(ctx, term1.value[1], term2.value[1]));
-      else if (term1.ctor === 'freevar') return [ new Decl({def: [term1.value[0], term2]}) ];
-      else if (term2.ctor === 'freevar') return [ new Decl({def: [term2.value[0], term1]}) ];
+        .concat(constraintToDecls(ctx, term1[0], term2[0]))
+        .concat(constraintToDecls(ctx, term1[1], term2[1]));
+      else if (term1.ctor === 'freevar') return [ new Decl({def: [term1[0], term2]}) ];
+      else if (term2.ctor === 'freevar') return [ new Decl({def: [term2[0], term1]}) ];
       else error.tc_constraint_cannot_eq()
     }
 
@@ -1281,11 +1329,11 @@ var Reason = options => {
           loop = i => {
             if (rightItems.length === 0) return Promise.resolve();
             let item = rightItems[0], arg = args[i];
-            if (['erased', 'term'][arg.value[1]] === item.ctor) throw error.tc_erasure_mismatch();
+            if (['erased', 'term'][arg[1]] === item.ctor) throw error.tc_erasure_mismatch();
             switch (item.ctor) {
-              case 'term': return check(ctx, arg.value[0], item.value[1]).then(({term}) => {
-                arg.value[0] = term;
-                rightItems = doSubst(ctx, [[rightItems.shift().value[0], arg.value[0]]], new Tele(...rightItems));
+              case 'term': return check(ctx, arg[0], item[1]).then(({term}) => {
+                arg[0] = term;
+                rightItems = doSubst(ctx, [[rightItems.shift()[0], arg[0]]], new Tele(...rightItems));
                 runtimeArgs.push(arg)
                 return loop(i + 1)
               })
@@ -1294,8 +1342,8 @@ var Reason = options => {
               return loop(i)
 
               case 'constraint':
-              if (item.value[0].equal(item.value[1])) return loop(i + 1);
-              error.tc_mismatch(...item.value)
+              if (item[0].equal(item[1])) return loop(i + 1);
+              error.tc_mismatch(...item)
             }
           };
       return loop(0).then(() => runtimeArgs)
@@ -1305,12 +1353,12 @@ var Reason = options => {
       return tele.items.map(item => {
         switch (item.ctor) {
           case 'term': case 'erased':
-          let type = nameTerms.reduce((acc, [name, term]) => substFV(term, acc, name), quote(item.value[1]));
-          return new Item({[item.ctor]: [item.value[0], evaluate(type, ctx)]})
+          let type = nameTerms.reduce((acc, [name, term]) => substFV(term, acc, name), quote(item[1]));
+          return new Item({[item.ctor]: [item[0], evaluate(type, ctx)]})
 
           case 'constraint':
           let substItems = item.map(side => nameTerms.reduce((acc, [name, term]) => substFV(term, acc, name), side));
-          constraintToDecls(ctx, ...substItem.value).forEach(decl => ctx.extend(decl));
+          constraintToDecls(ctx, ...substItem).forEach(decl => ctx.extend(decl));
           return new Item({constraint: substItems})
         }
       })
@@ -1319,7 +1367,7 @@ var Reason = options => {
     function substTele (ctx, tele1, terms, tele2) {
       return doSubst(ctx, tele1.items.map((item, i) => {
         switch (item.ctor) {
-          case 'term': return [item.value[0], terms[i]];
+          case 'term': return [item[0], terms[i]];
           default: error.internal_arg('substTele')
         }
       }), tele2)
@@ -1330,19 +1378,19 @@ var Reason = options => {
     function declarePat (ctx, pat, ep, type) { // adds bindings to the ctx recursively for each patvar in the pattern
       switch (pat.ctor) {
         case 'patvar':
-        let name = pat.value[0];
+        let name = pat[0];
         return [[new Decl({sig: [name, type]})], ep ? [name] : []]
 
         case 'patdcon':
         if (ep) error.tc_erased_pat();
         let itemsi = [], typei = type;
         while (typei.ctor === 'app') {
-          itemsi = [typei.value[1]].concat(itemsi);
-          typei = typei.value[0]
+          itemsi = [typei[1]].concat(itemsi);
+          typei = typei[0]
         }
-        let result = ctx.lookup(pat.value[0], 'ctor', typei.value[0]),
-            items = substTele(ctx, result.ddef.tail(), typei.value[1].concat(itemsi), result.cdef);
-        return declarePats(ctx, ...pat.value, items.slice(0, -1))
+        let result = ctx.lookup(pat[0], 'ctor', typei[0]),
+            items = substTele(ctx, result.ddef.tail(), typei[1].concat(itemsi), result.cdef);
+        return declarePats(ctx, ...pat, items.slice(0, -1))
       }
     }
     function declarePats (ctx, name, patArgs, items) {
@@ -1352,12 +1400,12 @@ var Reason = options => {
         (i === patArgs.length && rightItems.length && error.tc_pat_dcon_len(true)) ||
         i !== patArgs.length || rightItems.length
       ) {
-        let ep = true, pat = patArgs[i].value[0];
+        let ep = true, pat = patArgs[i][0];
         switch (rightItems[0].ctor) {
           case 'term': ep = false; case 'erased':
-          [decls1, names1] = declarePat(ctx, pat, ep, rightItems[0].value[1]);
-          let term = quotePat(ctx, pat, quote(rightItems[0].value[1]));
-          rightItems = doSubst(ctx, [[rightItems.shift().value[0], term]], new Tele(...rightItems));
+          [decls1, names1] = declarePat(ctx, pat, ep, rightItems[0][1]);
+          let term = quotePat(ctx, pat, quote(rightItems[0][1]));
+          rightItems = doSubst(ctx, [[rightItems.shift()[0], term]], new Tele(...rightItems));
           decls = decls.concat(decls1);
           names = names.concat(names1);
           i++; break;
@@ -1371,59 +1419,59 @@ var Reason = options => {
       return [decls, names]
     }
     function quotePat (ctx, pat, type) {
-      if (pat.ctor === 'patvar') return new Term({freevar: [pat.value[0]]});
+      if (pat.ctor === 'patvar') return new Term({freevar: [pat[0]]});
       else if (pat.ctor === 'patdcon' && type.ctor !== 'tcon' && type.ctor !== 'app') error.internal_arg('quotePat');
       let itemsi = [], typei = type;
       while (typei.ctor === 'app') {
-        itemsi = [typei.value[1]].concat(itemsi);
-        typei = typei.value[0]
+        itemsi = [typei[1]].concat(itemsi);
+        typei = typei[0]
       }
-      let result = ctx.lookup(pat.value[0], 'ctor', typei.value[0]),
-          items = substTele(ctx, result.ddef.tail(), typei.value[1].concat(itemsi), result.cdef),
+      let result = ctx.lookup(pat[0], 'ctor', typei[0]),
+          items = substTele(ctx, result.ddef.tail(), typei[1].concat(itemsi), result.cdef),
           rightItems = items.slice(0, -1), args = [], i = 0;
       while (
-        (!(rightItems.length ^ (i === pat.value[1].length)) && error.tc_pat_len(pat.value[0])) ||
+        (!(rightItems.length ^ (i === pat[1].length)) && error.tc_pat_len(pat[0])) ||
         rightItems.length
       ) {
         let ep = true;
         switch (rightItems[0].ctor) {
           case 'term': ep = false; case 'erased':
-          let t = quotePat(ctx, pat.value[1][i].value[0], quote(rightItems.shift().value[1]));
+          let t = quotePat(ctx, pat[1][i][0], quote(rightItems.shift()[1]));
           args.push(new Arg({arg: [t, ep]}));
           i++; break;
 
           case 'constraint':
           rightItems.splice(0, 1);
-          ctx.extend(constraintToDecls(ctx, ...type.value)) //???
+          ctx.extend(constraintToDecls(ctx, ...type)) //???
         }
       }
-      return new Term({dcon: [pat.value[0], args, type]})
+      return new Term({dcon: [pat[0], args, type]})
     }
 
     function equateWithPat (ctx, term, pat, type) {
       switch (term.ctor) {
-        case 'freevar': return [new Decl({def: [ term.value[0], evaluate(quotePat(ctx, pat, type), ctx) ]})]
+        case 'freevar': return [new Decl({def: [ term[0], evaluate(quotePat(ctx, pat, type), ctx) ]})]
 
         case 'dcon':
-        if (!term.value[0].equal(pat.value[0])) return [];//error.tc_pat_cannot_omit(pat.value[0]);
+        if (!term[0].equal(pat[0])) return [];//error.tc_pat_cannot_omit(pat[0]);
         let itemsi = [], typei = type; // move into a helper
         while (typei.ctor === 'app') {
-          itemsi = [typei.value[1]].concat(itemsi);
-          typei = typei.value[0]
+          itemsi = [typei[1]].concat(itemsi);
+          typei = typei[0]
         }
-        let result = ctx.lookup(term.value[0], 'ctor', typei.value[0]),
-            items = substTele(ctx, result.ddef, typei.value[1].concat(itemsi), result.cdef),
+        let result = ctx.lookup(term[0], 'ctor', typei[0]),
+            items = substTele(ctx, result.ddef, typei[1].concat(itemsi), result.cdef),
             rightItems = items.slice(0, -1), decls = [], i = 0;
         for (; rightItems.length; i++) {
           let thisItem = rightItems.shift();
           switch (thisItem.ctor) {
             case 'term': case 'erased':
-            decls = decls.concat(equateWithPat(ctx, term.value[1][i].value[0], pat.value[1][i].value[0], quote(thisItem.value[1])));
-            rightItems.forEach(item => item.value[0] = substFV(thisItem.value[0], item.value[0], term.value[1][i].value[0]));
+            decls = decls.concat(equateWithPat(ctx, term[1][i][0], pat[1][i][0], quote(thisItem[1])));
+            rightItems.forEach(item => item[0] = substFV(thisItem[0], item[0], term[1][i][0]));
             break;
 
             case 'contraint':
-            ctx.extend(constraintToDecls(ctx, ...items[i].value));
+            ctx.extend(constraintToDecls(ctx, ...items[i]));
           }
         }
         return decls
@@ -1435,14 +1483,14 @@ var Reason = options => {
     function exhaustivityCheck (ctx, term, type, pats) {
       function checkImpossible (cdefs) {
         return cdefs.reduce((p, cdef) => p.then(acc =>
-          tcTele(ctx, new Tele(...substTele(ctx, result.ddef.tail(), type.value[1], cdef.value[1])))
-            .then(() => [cdef.value[0]])
+          tcTele(ctx, new Tele(...substTele(ctx, result.ddef.tail(), type[1], cdef[1])))
+            .then(() => [cdef[0]])
             .catch(() => [])
             .then(res => acc.concat(res))
         ), Promise.resolve([]))
       }
       function removeDcon (name, cdefs) {
-        for (let i = 0; i < cdefs.length; i++) if (name.equal(cdefs[i].value[0]))
+        for (let i = 0; i < cdefs.length; i++) if (name.equal(cdefs[i][0]))
           return [cdefs[i], cdefs.slice(0, i).concat(cdefs.slice(i + 1))];
         error.internal_cant_find(name)
       }
@@ -1450,7 +1498,7 @@ var Reason = options => {
         let argss = [], pats1 = []
         for (let i = 0; i < pats.length; i++) switch (pats[i].ctor) {
           case 'patdcon':
-          if (name === pats[i].value[0]) args.push(pats[i].value[1]);
+          if (name === pats[i][0]) args.push(pats[i][1]);
           else pats1.push(pats[i]);
           break;
 
@@ -1466,7 +1514,7 @@ var Reason = options => {
             case 'term': case 'erased':
             if (patss.length !== 0 && patss.every(pats => pats.length !== 0)) {
               let {hds, tls} = patss.reduce((acc, pats) => {
-                    acc.hds.push(pats[0].value[0]);
+                    acc.hds.push(pats[0][0]);
                     acc.tls.push(pats.slice(1));
                     return acc
                   }, {hds: [], tls: []});
@@ -1478,7 +1526,7 @@ var Reason = options => {
       }
       if (pats.length > 0 && pats[0].ctor === 'patvar') return;
       if (type.ctor !== 'tcon') error.tc_mismatch(type, 'Type Constructor');
-      let result = ctx.lookup(type.value[0], 'data');
+      let result = ctx.lookup(type[0], 'data');
       if (result.cdef === null) error.tc_dcon_cannot_infer();
       (function loop (ps, dcons) {
         if (ps.length === 0) {
@@ -1489,10 +1537,10 @@ var Reason = options => {
           switch (pat.ctor) {
             case 'patvar': return;
             case 'patdcon':
-            let [cd, dcons1] = removeDcon(pat.value[0], dcons);
-            let items = substTele(ctx, result.ddef.tail(), type.value[1], cd.value[1]),
-                [argss, pats1] = relatedPats(pat.value[0], ps.slice(i + 1));
-            checkSubPats(pat.value[0], items.slice(0, -1), [pat.value[1], ...argss]);
+            let [cd, dcons1] = removeDcon(pat[0], dcons);
+            let items = substTele(ctx, result.ddef.tail(), type[1], cd[1]),
+                [argss, pats1] = relatedPats(pat[0], ps.slice(i + 1));
+            checkSubPats(pat[0], items.slice(0, -1), [pat[1], ...argss]);
             return loop(pats1, dcons1)
           }
         })
@@ -1502,7 +1550,7 @@ var Reason = options => {
 
     // Main typecheck
     return decls.reduce((p, decl) => p.then(acc => {
-      let [name, info, ctors] = decl.value, mbValue, value;
+      let [name, info, ctors] = decl, mbValue, value;
       switch (decl.ctor) {
         case 'sig':
         let typeVal = new Value({vstar: []});
@@ -1511,8 +1559,8 @@ var Reason = options => {
           if (info.equal(quote(mbValue))) return acc.concat([{declName: 'sig', type: typeVal, value: mbValue, term: info}]);
           else error.duplicate(name);
         } else return check(context, info, typeVal).then(({term, type}) => {
-          console.log(name.value[0], ':', print(term));
-          let value = evaluate(term, context);
+          console.log(print(name), ':', print(term));
+          let value = evaluate(term);
           context.extend(new Decl({sig: [ name, value ]}));
           return acc.concat([{declName: 'sig', type, value, term: info}])
         })
@@ -1526,15 +1574,15 @@ var Reason = options => {
           let mbType = context.lookup(name, 'sig'), args;
           return (typeof mbType === 'undefined') ?
             infer(args = {ctx: context, term: info}).then(type => {
-              console.log(name.value[0], ':', print(type));
-              console.log(name.value[0], ':=', print(args.term));
-              value = evaluate(args.term, context);
+              console.log(print(name), ':', print(type));
+              console.log(print(name), ':=', print(args.term));
+              value = evaluate(args.term);
               context.extend([new Decl(({sig: [name, type]})), new Decl({def: [name, value]})]);
               return acc.concat([{declName: 'def', type, value, term: args.term}])
             }) :
             check(context, info, mbType).then(({term, type}) => {
-              console.log(name.value[0], ':=', print(term));
-              value = evaluate(term, context);
+              console.log(print(name), ':=', print(term));
+              value = evaluate(term);
               context.extend(new Decl({def: [name, value]}));
               return acc.concat([{declName: 'def', type, value, term}])
             })
@@ -1543,22 +1591,24 @@ var Reason = options => {
         case 'data':
         return tcTele(new Context(context), info).then(tele =>
           ctors.reduce((p, ctor) => p.then(acc =>
-            tcTele(context.cons(new Decl({datasig: [name, tele]})).concatTele(tele), ctor.value[1])
-              .then(ctorTele => acc.concat([new Ctor({ctor: [ctor.value[0], ctorTele]})]))
+            tcTele(context.cons(new Decl({datasig: [name, tele]})).concatTele(tele), ctor[1])
+              .then(ctorTele => acc.concat([new Ctor({ctor: [ctor[0], ctorTele]})]))
           ), Promise.resolve([])).then(ctors => {
             let quoteTele = tl => new Tele(...tl.items.map(item =>
-              new Item({[item.ctor]: [ item.ctor === 'constraint' ? quote(item.value[0]) : item.value[0], quote(item.value[1]) ]})));
-            console.log(name.value[0] + print(quoteTele(tele)) +
-              ctors.map(ctor => '\n  ' + print(new Ctor({ctor: [ ctor.value[0], quoteTele(ctor.value[1]) ]}))).join(''));
+              new Item({[item.ctor]: [ item.ctor === 'constraint' ? quote(item[0]) : item[0], quote(item[1]) ]})));
+            console.log(print(name) + print(quoteTele(tele)) +
+              ctors.map(ctor => '\n  ' + print(new Ctor({ctor: [ ctor[0], quoteTele(ctor[1]) ]}))).join(''));
             let decl = new Decl({data: [name, tele, ctors]});
             context.extend(decl);
-            return [{declName: 'data', params: tele.items.slice(0, -1), type: tele.items.slice(-1), ctors}]
+            return [{ declName: 'data', params: tele.items.slice(0, -1), type: quote(tele.items.slice(-1)[0][1]), ctors,
+              ...(tele.items.length === 1 && tele.items[0][1].ctor === 'vstar' ? {term: new Term({tcon: [name, []]})} : {})
+            }]
           })
         )
 
         case 'recdef': case 'datasig': error.tc_internal()
       }
-    }), Promise.resolve([])).catch(e => {console.log(e); throw e})
+    }), Promise.resolve([]))
   }
 
 
@@ -1568,7 +1618,7 @@ var Reason = options => {
 
   const R = { Data, Sig, Def, context, print },
         sequence = (p => fn => p = fn ? p.then(fn) : p)(Promise.resolve());
-  Object.defineProperty(R, 'ready', { get () { return sequence(() => new Promise(r => setTimeout(r, 0))) } });
+  Object.defineProperty(R, 'ready', { get () { return sequence(() => new Promise(r => setTimeout(r, 0))) } }); // TODO: make all props read-only
 
   return R
 };
@@ -1592,16 +1642,16 @@ let test;
       catch (e) { console.log(test, e) }
   }
 
-  // functions, lambdas
-  id1 = new R
-    .Sig('id', '(T : Type) -> T -> T')
-    .Def('(t, x => x)');
-
-  // functions with builtins
-  id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
-    { toString () { return this[0].toString() },
-    valueOf () { return this[0].valueOf() } }
-  );
+  // // functions, lambdas
+  // id1 = new R
+  //   .Sig('id', '(T : Type) -> T -> T')
+  //   .Def('(t, x => x)');
+  //
+  // // functions with builtins
+  // id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
+  //   { toString () { return this[0].toString() },
+  //   valueOf () { return this[0].valueOf() } }
+  // );
 
 
   // types
@@ -1611,23 +1661,37 @@ let test;
     [ { 'TT : Unit':
       { toString: () => '()',
         valueOf: () => null } } ],
-    { fromJS: () => Unit().tt() }
+    { fromJS: () => Unit.tt() }
   );
-  tt = new R.Def("tt", "tt : Unit")
+
+  await R.ready;
+  let unit = Unit();
+  console.log('unit', unit, unit.term.toString(), unit.type.toString(), unit.toString());
+  tt = Unit.tt();
+  console.log('tt', tt, tt.term.toString(), tt.type.toString(), tt.toString(), tt.valueOf())
+
+
   Bool = new R.Data(
     'Bool', 'Type',
     [ 'F : Bool',
       'T : Bool' ],
-    { fromJs: v => Bool()[(!!v + '')[0]]() }
+    { fromJs: v => Bool[(!!v + '')[0]]() }
   );
+  // f = new R.Def("f", "f : Bool") // circular definition!
   lamTest = new R.Def('lamTest', '((x => x) : Bool -> Bool) F : Bool');
 
   Nat_ = new R.Data(
     "Nat'", 'Type',
-    [ "Z : Nat'",
-      "S : (n:Nat') -> Nat'" ],
-    { fromJS: v => ((f = a => (--v ? f : x => x)(Nat().s(a))) => f(Nat().z()))() }
+    [ { "Z : Nat'": { toString: () => 'Z', valueOf: () => 0 } },
+      { "S : (n:Nat') -> Nat'": {
+        toString () { return 'S' + this[0].toString() },
+        valueOf () { return this[0].valueOf() + 1 } } } ],
+    { fromJS: v => ((f = a => (--v ? f : x => x)(Nat_.s(a))) => f(Nat_.z()))() }
   );
+
+  await R.ready;
+  let nat3 = Nat_.s(Nat_.s(Nat_.s(Nat_.z())));
+  console.log(nat3, R.print(nat3.term), nat3.toString(), nat3.valueOf());
 
   // pattern matching
   plus = new R
@@ -1659,7 +1723,7 @@ let test;
     "listMap", "{A B : Type} -> (A -> B) -> List' A -> List' B" ).Def({
     "{A} {B} f xs | xs": // {A B} ?
     [ "Nil := Nil",
-      "Cons y ys := Cons (f y) (listMap {A} {B} f ys)" ] }); // TODO: allow erased terms to not be written, ie listMap f ys
+      "Cons a as := Cons (f a) (listMap {A} {B} f as)" ] }); // TODO: allow erased terms to not be written, ie listMap f ys
 
   allAddTwo = new R.Sig(
     "allAddTwo", "List' Nat' -> List' Nat'"  ).Def(
@@ -1703,12 +1767,6 @@ let test;
   //     "S (S m) := S (half m)" ]
   // })
   //
-  //
-  // id3 = new R // Cannot pattern match because x could be a function
-  //   .Sig("id''", "(T : Type) -> T -> T")
-  //   // .Def(["@ x := x"]);
-  //   .Def({"t x | x": [ "n := n" ]});
-  //
   // // proof example
   // Id_ = new R.Data(
   //   "Id'", "{A : Type}(x : A) : A -> Type",
@@ -1723,4 +1781,4 @@ let test;
     [ "lz : (n : Nat') -> Leq' (Z) n", // TODO: all right identifiers parse as arguments, including tnames and dnames
       "ls : (m n : Nat') (p : Leq' m n) -> Leq' (S m) (S n)" ]
   )
-})()
+})().catch(console.log)
