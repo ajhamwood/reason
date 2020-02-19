@@ -36,6 +36,7 @@ var Reason = options => {
 
             // Pretty printer errors
             print_value: quoted => `Print error: warning - tried to print a Value (quoted: ${quoted})`,
+            print_bad: val => `Print error: unprintable argument ${val}`,
 
             // Typechecking errors
             tc_mismatch: (tested, given, term) => `Type error: mismatch at\n    ${print(tested)}\nexpecting\n    ${print(given)}${
@@ -59,9 +60,9 @@ var Reason = options => {
             tc_erased_pat: () => 'Type error: cannot pattern match erased arguments',
             tc_pat_dcon_len: dir => `Type error: ${dir ? 'too many' : 'not enough'} patterns in match for data constructor`,
             tc_pat_len: name => `Type error: wrong number of args to pattern ${name}`,
-            tc_pat_cannot_omit: name => `Type error: case for ${name.toString()} cannot be omitted (yet)`,
+            tc_pat_cannot_omit: name => `Type error: case for ${print(name)} cannot be omitted (yet)`,
             tc_dcon_cannot_infer: () => 'Type error: cannot infer data constructor',
-            tc_missing_cases: l => `Type error: missing cases for ${l.map(x => x.toString()).join(', ')}`,
+            tc_missing_cases: l => `Type error: missing cases for ${l.map(x => print(x)).join(', ')}`,
             tc_subpat_cannot_dcon: () => 'Type error: cannot use data constructor in subpattern (yet)',
 
             tc_internal: msg => 'Type error: internal construct' + msg ? '\n  ' + msg : '',
@@ -131,8 +132,8 @@ var Reason = options => {
               [getName(cdef), {}] :
               Object.entries(cdef)[0].map((x, i) => i ? x : getName(x))
           }),
-          { fromJS, ...dBuiltins } = builtins, fromJSThis = {}, paramsRoot,
-          jsTyTerm = ctorNames.reduce((a, x) => Object.assign(a, { [x[0].toLowerCase()]: () => error.unchecked() }),
+          { fromJS, ...dBuiltins } = builtins, fromJSThis = {}, root,
+          jsTerm = ctorNames.reduce((a, x) => Object.assign(a, { [x[0].toLowerCase()]: () => error.unchecked() }),
             Object.assign({ toString: () => `<${name}>` }, { ...dBuiltins, appliedTerms: [], eval: () => quote(evaluate(term, context)) }));
       // Data(name, tcon, [dcons], {...builtins})
       // Data(name, tcon, [{dcons}], {...builtins})
@@ -144,52 +145,53 @@ var Reason = options => {
         .then(decls => typecheck(decls, context))
         .then(res => {
           let [{declName, term, type, params, ctors}] = res;
-          paramsRoot = params;
+          root = res[0];
           if (declName === 'data') {
-            Object.assign(jsTyTerm, { term, type });
-            if (term) Object.assign(jsTyTerm, { print: R.print(term) });
-            ctorNames.forEach(([ctorName, cBuiltins]) => {
-              let lcname = ctorName.toLowerCase(), ctor;
-              jsTyTerm[lcname] = fromJSThis[lcname] = ctor = Object.assign((...termArgs) => {
-                // Initialise a term of the given type
-                // check if indexed type -> appliedTerm for each param -> if not, throw error
-                let term = new Term({dcon: [ new Name({global: [ctorName]}), termArgs.map(tm =>
-                      new Arg({arg: [tm.term, false]}))
-                    ]}),
-                    type = context.lookup(term[0], 'ctor')[0].cdef.items[0][1].quote();
-                let fresh = parser.fresh(), jsTmTerm = { term, type, appliedTerms: [],
-                    print: R.print(term), eval: () => Object(jsTerm, { term: quote(evaluate(term, context)) }) };
-                if (termArgs.length) {
-                  // Initialise a term, with arguments
-                  let readyTm = false;
-                  wait('data', fresh);
-                  jsTmTerm.appliedTerms = termArgs;
-                  sequence(() => typecheck([
-                    new Decl({sig: [ new Name({global: [fresh]}), jsTyTerm.term ]}),
-                    new Decl({def: [ new Name({global: [fresh]}), term ]})
-                  ])).then(res => {
-                    unwait('data', fresh);
-                    readyTm = true
-                  })
-                };
-                jsTmTerm = Object.assign(() => jsTmTerm, Object.assign(jsTmTerm, Object.assign({ toString: () => `<${ctorName}>` }, Object.entries(cBuiltins)
-                  .reduce((a, [fname, fn]) => Object.assign(a, { [fname]: fn.bind(jsTmTerm.appliedTerms) }), {}))));
-                Object.defineProperty(jsTmTerm, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsTmTerm) } });
-                return jsTmTerm
-              }, cBuiltins)
-            });
+            Object.assign(jsTerm, { term, type });
+            if (term) Object.assign(jsTerm, { term, print: print(term) })
           }
           readyDecl = true;
           unwait('data', name)
         }));
-      jsTyTerm = Object.assign((...typeArgs) => {
+      let curry = function (outerTy, typeArgs) {
         if (readyDecl) {
+          let { term, type, params } = root, jsTyTerm = { appliedTerms: typeArgs, type };
+          if (term) Object.assign(jsTyTerm, { term, print: print(term) });
+          ctorNames.forEach(([ctorName, cBuiltins]) => {
+            let lcname = ctorName.toLowerCase(), ctor;
+            jsTyTerm[lcname] = fromJSThis[lcname] = ctor = Object.assign((...termArgs) => {
+              // Initialise a term of the given type
+              // check if indexed type -> appliedTerm for each param -> if not, throw error
+              let term = new Term({dcon: [ new Name({global: [ctorName]}), termArgs.map(tm =>
+                    new Arg({arg: [tm.term, false]}))
+                  ]}),
+                  type = context.lookup(term[0], 'ctor')[0].cdef.items[0][1].quote(), // fix this!
+                  fresh = parser.fresh(), jsTmTerm = { term, type, appliedTerms: [],
+                    print: R.print(term), eval: () => Object.assign(jsTyTerm, { term: quote(evaluate(term, context)) }) };
+              if (termArgs.length) {
+                // Initialise a term, with arguments
+                wait('data', fresh);
+                jsTmTerm.appliedTerms = termArgs;
+                sequence(() => typecheck([
+                  new Decl({sig: [ new Name({global: [fresh]}), jsTyTerm.term ]}),
+                  new Decl({def: [ new Name({global: [fresh]}), term ]})
+                ])).then(res => {
+                  let { term, type } = res.find(decl => decl.declName === 'def');
+                  Object.assign(jsTmTerm, { term, type, print: print(term) });
+                  unwait('data', fresh);
+                })
+              };
+              jsTmTerm = Object.assign(() => jsTmTerm, Object.assign(jsTmTerm, Object.assign({ toString: () => `<${ctorName}>` }, Object.entries(cBuiltins)
+                .reduce((a, [fname, fn]) => Object.assign(a, { [fname]: fn.bind(jsTmTerm.appliedTerms) }), {}))));
+              Object.defineProperty(jsTmTerm, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsTmTerm) } });
+              return jsTmTerm
+            }, cBuiltins)
+          });
           // Initialise a type
           if (typeArgs.length) {
             // Initialise a type, with parameters
-            jsTyTerm.appliedTerms = jsTyTerm.appliedTerms.concat(typeArgs);
-            paramsRoot.forEach((param, i) => fromJSThis[(param[0][0][0] + '').toLowerCase()] = jsTyTerm.appliedTerms[i]);
-            let fresh = parser.fresh(), readyTy = false;
+            params.forEach((param, i) => fromJSThis[(param[0][0][0] + '').toLowerCase()] = jsTyTerm.appliedTerms[i]);
+            let fresh = parser.fresh();
             wait('data', fresh)
             sequence(() => typecheck([
               new Decl({sig: [ new Name({global: [fresh]}), new Term({star: []}) ]}),
@@ -200,17 +202,19 @@ var Reason = options => {
             ], context)).then(res => {
               // is typeArgs the same length as params?
               let { term, type } = res.find(decl => decl.declName === 'def');
-              Object.assign(jsTyTerm, { term, type, print: R.print(term),
-                 eval: () => Object.assign(jsTerm, { term: quote(evaluate(term, context)) }) });
+              Object.assign(jsTyTerm, { term, type, print: print(term),
+                 eval: () => Object.assign(jsTyTerm, { term: quote(evaluate(term, context)) }) });
               unwait('data', fresh)
-              readyTy = true;
             })
           }
-          return jsTyTerm = Object.assign(jsTyTerm, { fromJS: fromJS.bind(fromJSThis) })
+          jsTyTerm = Object.assign((...typeArgs) => curry(jsTyTerm, typeArgs), { ...jsTyTerm, fromJS: fromJS.bind(fromJSThis) });
+          Object.defineProperty(jsTyTerm, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsTyTerm) } });
+          return jsTyTerm
         } else error.unchecked()
-      }, jsTyTerm);
-      Object.defineProperty(jsTyTerm, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsTyTerm) } });
-      return jsTyTerm
+      };
+      jsTerm = Object.assign((...typeArgs) => curry(jsTerm, typeArgs), jsTerm);
+      Object.defineProperty(jsTerm, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsTerm) } });
+      return jsTerm
     }
   }
 
@@ -1070,6 +1074,7 @@ var Reason = options => {
         }).join('') + ' : ' + recPrint(obj.items.slice(-1)[0][1], 1, int2)
       } else if (testObj(Ctor)) { return recPrint(obj[0]) + recPrint(obj[1]) }
       else if (testObj(Value)) error.print_value(print(quote(obj)))
+      else error.print_bad(obj)
     })(o);
     return preString.replace(/\[(\d{1,3})\]/g, (_, m) => (anns[m] ? vars(anns.slice(0, m + 1).reduce((a, b) => a + b) - 1) + ' : ' : ''))
   }
@@ -1713,12 +1718,12 @@ let test;
     [ { 'TT : Unit':
       { toString: () => '()',
         valueOf: () => null } } ],
-    { fromJS: () => Unit.tt() }
+    { fromJS: () => Unit().tt() }
   ).ready;
 
   let unit = Unit();
   console.log('unit', unit, unit.term.toString(), unit.type.toString(), unit.toString());
-  tt = Unit.tt();
+  tt = Unit().tt();
   console.log('tt', tt, tt.term.toString(), tt.type.toString(), tt.toString(), tt.valueOf())
 
 
@@ -1726,7 +1731,7 @@ let test;
     'Bool', 'Type',
     [ { 'F : Bool': { toString: () => 'F', valueOf: () => false } },
       { 'T : Bool': { toString: () => 'T', valueOf: () => true } } ],
-    { fromJS: v => Bool[(!!v + '')[0]]() }
+    { fromJS: v => Bool()[(!!v + '')[0]]() }
   );
   // f = new R.Def("f", "f : Bool") // circular definition!
   lamTest = new R.Def('lamTest', '((x => x) : Bool -> Bool) F : Bool');
@@ -1737,13 +1742,13 @@ let test;
       { "S : (n:Nat) -> Nat": {
         toString () { return 'S' + this[0].toString() },
         valueOf () { return this[0].valueOf() + 1 } } } ],
-    { fromJS: v => ((z, s, p = () => v-- ? s(p()) : z) => p())(Nat.z(), x => Nat.s(x)) }
+    { fromJS: v => ((z, s, p = () => v-- ? s(p()) : z) => p())(Nat().z(), x => Nat().s(x)) }
   );
 
   // await R.ready;
-  // let nat2 = Nat.s(Nat.s(Nat.z()));
+  // let nat2 = Nat().s(Nat().s(Nat().z()));
   // console.log(nat2, R.print(nat2.term), nat2.toString(), nat2.valueOf());
-  // let nat3 = Nat.fromJS(3);
+  // let nat3 = Nat().fromJS(3);
   // console.log(nat3.toString(), R.print(nat3.type))
 
   // pattern matching
@@ -1774,17 +1779,18 @@ let test;
     { fromJS (v) { return ((n, c, p = () => v.length ? c(v.pop(), p()) : n) => p())(this.nil(), (x, y) => this.cons(this.a.fromJS(x), y)) } } );
 
 
-  let a = await plus(Nat.s(Nat.s(Nat.z()))).ready;
+  let a = await plus(Nat().s(Nat().s(Nat().z()))).ready;
   console.log(a, a.result.print())
-  let b = await a(Nat.s(Nat.z())).ready;
+  let b = await a(Nat().s(Nat().z())).ready;
   console.log(b, b.result.print())
 
 
-  listNat = await List(Nat()).ready;
+  listNat = List(Nat());
   console.log(listNat);
-  theList = listNat.cons(Nat.z(), listNat.cons(Nat.s(Nat.z()), listNat.nil()));
+  theList = listNat.cons(Nat().z(), listNat.cons(Nat().s(Nat().z()), listNat.nil()));
   console.log(theList, theList.toString(), theList.valueOf());
-
+  let list3 = await List(Bool()).fromJS([false, false, true, false]).ready;
+  console.log(list3.valueOf(), list3.type.print())
 
 
   listMap = new R.Sig(
@@ -1828,14 +1834,14 @@ let test;
       { "Succ : {n : Nat}(i : Fin n) -> Fin (S n)":
         {  toString () { return `Succ [${this.value[1].valueOf() - 1}] ` + this.value[1].toString() },
            valueOf () { return this[1].valueOf() - 1 } } } ],
-    { fromJS: v => ((z, s, p = () => v-- ? s(p()) : z) => p())(Fin.zero(), x => Fin.succ(x)) } );
+    { fromJS: v => ((z, s, p = () => v-- ? s(p()) : z) => p())(Fin().zero(), x => Fin().succ(x)) } );
 
   Sigma = new R.Data(
     "Sigma", "(A : Type)(B : A -> Type) : Type",
     [ { "DProd : (x : A)(y : B x) -> Sigma A B":
         { toString () { return `Σ[${this[0].toString()}, ${this[1](this[0]).toString()}]` },
           valueOf () { return [this[0].valueOf(), this[1](this[0]).valueOf()] } } } ],
-    { fromJS: ([v, f]) => Sigma.dprod(v, f) } );
+    { fromJS: ([v, f]) => Sigma().dprod(v, f) } );
 
   // half = new R.Sig(
   //   "half", "Nat -> Nat"
