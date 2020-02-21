@@ -1,34 +1,207 @@
 <!doctype html>
 <html>
 <head>
-  <title>Reason.js</title>
+  <title>reason.js</title>
   <meta charset='UTF-8'>
   <meta name='viewport' content='width=device-width, initial-scale=1'>
-  <meta name='keywords' content='key, words'>
-  <meta name='description' content='Description.'>
+  <meta name='keywords' content='reason.js, reason, javascript, dependent types, formal verification, proofs'>
+  <meta name='description' content='A library for dependent types in Javascript, with the power to formally verify properties on typed objects.'>
   <link rel='icon' type='image/x-icon' href='data:image/x-icon;base64,'>
   <style>
-html, body { height: 100% }
-body { margin: 0; background: #000; color: #fff }
+    @font-face {
+      font-family: 'sketchblock';
+      src: url('fonts/SketchBlock.woff') format('woff2'),
+           url('fonts/SketchBlock.woff2') format('woff2');
+      font-weight: normal;
+      font-style: normal
+    }
+    @font-face {
+      font-family: 'crimson';
+      src: url('fonts/Crimson.woff')  format('woff'),
+           url('fonts/Crimson.woff2') format('woff2');
+      font-weight: normal;
+      font-style: normal
+    }
+    @font-face {
+      font-family: 'crimson';
+      src: url('fonts/Crimson-Bold.woff')  format('woff'),
+           url('fonts/Crimson-Bold.woff2') format('woff2');
+      font-weight: bold;
+      font-style: normal
+    }
+    body {
+      margin: 4vh 25vw 0 15vw;
+      background: url(images/bg.png);
+      min-height: calc(100vh - 8vmin);
+      color: #fff;
+      font-size: 18px;
+      border-top: 10px solid white }
+    section {
+      clear: right;
+      margin-bottom: 10vmin }
+    h1 {
+      font-family: 'sketchblock';
+      font-weight: normal;
+      margin: 2vmin 4vmin 5vmin 0;
+      font-size: 4rem }
+    h2 {
+      font-family: 'crimson';
+      font-size: 2.4rem;
+      margin: 0 4vmin 3vmin 0 }
+    p {
+      font-family: 'crimson';
+      font-size: 1.6rem;
+      margin: 3vmin 0 4vmin 0;
+      line-height: 2.4rem;
+      text-align: justify }
+    aside {
+      margin: 0 -15vw 4vh 4vw;
+      width:  35vw;
+      height: 25vw;
+      float: right;
+     }
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: 0 }
+    .cut-in {
+      margin: 4vh -15vw 16vh 4vw;
+      --top: 8rem;
+      --width: 35vw;
+      --height: 30rem;
+      --bottom: 100vh;
+
+      width:  var(--width);
+      height: var(--height);
+      transform: translate(0, var(--top));
+      shape-outside: polygon(0 var(--top), var(--width) var(--top), var(--width) var(--bottom), 0 var(--bottom));
+      clip-path: polygon(0 0, var(--width) 0, var(--width) calc(var(--bottom) - var(--top)), 0 calc(var(--bottom) - var(--top)))
+    }
   </style>
   <script src='reason.js' defer></script>
   <script src='machine.js'></script>
 </head>
 <body>
-  <section>
-    <h1>Reason.js</h1>
-    <p>Just experimenting for the time being.</p>
-  </section>
+  <main>
+    <section>
+      <h1>reason.js</h1>
+      <p>A library for dependent types in Javascript, with the power to formally verify properties on typed objects.</p>
+    </section>
+  </main>
+  <template id='editor'
+    ><html>
+      <head>
+        <style>
+          @font-face {
+            font-family: 'univers';
+            src: url('fonts/UniversNextTypewriter.woff')  format('woff'),
+                 url('fonts/UniversNextTypewriter.woff2') format('woff2');
+            font-weight: normal;
+            font-style: normal
+          }
+          html {
+            margin: 0;
+            --x: 10px;
+            font-size: 16px }
+          body {
+            margin: 1px 2px 1px 1px;
+            overflow: hidden;
+            background: #0008;
+            color: #fff }
+          main {
+            display: grid;
+            width: 100%;
+            grid-gap: 1px }
+          #source, #log {
+            width: calc(100vw - 2 * var(--x) - 2px);
+            height: calc(50vh - 2 * var(--x) - 1.5px);
+            box-shadow: 0 0 0 1px #666;
+            padding: var(--x);
+            line-height: 1.2rem }
+          #source {
+            border: 0;
+            margin: 0;
+            outline: 0;
+            background: transparent;
+            min-height: 5vh;
+            max-height: 85vh;
+            resize: vertical;
+            font-size: inherit;
+            font-family: 'univers';
+            color: #fff }
+          #log {
+            white-space: pre;
+            font-family: 'univers';
+            overflow-y: auto }
+          button {
+            position: absolute;
+            top: 10px;
+            right: 10px }
+          hr {
+            border: 0;
+            height: 0;
+            border-top: 1px solid #444 }
+        </style>
+        <script src='reason.js' defer></script>
+      </head>
+      <body>
+        <main>
+          <textarea id='source'>[]</textarea>
+          <div id='log'></div>
+        </main>
+        <button id='run'>Run</button>
+        <script type="text/javascript" defer>
+          let sourceTextbox = document.getElementById('source'),
+              logDiv = document.getElementById('log'),
+              runButton = document.getElementById('run');
+              adjustHeight = () => logDiv.style.height = window.innerHeight - 23 - sourceTextbox.offsetHeight + 'px',
+              log = (...args) => {
+                logDiv.childNodes.length && logDiv.appendChild(document.createElement('hr'));
+                logDiv.appendChild(document.createTextNode(args.join(' '))) };
+          new MutationObserver(adjustHeight).observe(sourceTextbox, { attributes: true, attributeFilter: [ "style" ] });
+          runButton.addEventListener('click', () => eval(`(async () => { let R = Reason(); ${sourceTextbox.value} })().catch(e => log(e.message))`))
+        </script>
+      </body>
+    </html
+  ></template>
+  <template id='section'
+    ><section>
+      <h2></h2>
+      <aside><iframe></iframe></aside>
+    </section
+  ></template>
   <script>
 // Page state
-var app = new $.Machine({});
+var app = new $.Machine({
+  sections: [
+    ['Documentation and tutorial coming soon...', [], [
+      `let id = await new R.Def(`,
+      `  "id", "({t}, x => x) : {T : Type} -> T -> T"`,
+      `).ready;`,
+      `log(id.print);`,
+      `log(id.type.print())`
+    ].join('\n'), false]
+  ]
+});
 
 // Events
 $.targets({
-  load () {
-
-  },
-  app: { '' () {} }
+  load () { app.emit('load-editors') },
+  app: { 'load-editors' () {
+    this.sections.forEach(([title, ps, source, cutin]) => {
+      let section = $.load('section', 'main')[0][0];
+      $('h2', section)[0].textContent = title;
+      for (let p of ps) {
+        let ptag = document.createElement('p');
+        ptag.textContent = p;
+        section.appendChild(ptag)
+      }
+      if (source && source.length) {
+        $('iframe', section)[0].srcdoc = $('template#editor')[0].innerHTML.replace(/\[\]/g, source);
+        if (cutin) $('aside', section)[0].classList.add('cut-in');
+      } else $('aside', section)[0].remove();
+    })
+  } }
 });
 
 $.queries({})

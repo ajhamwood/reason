@@ -1,7 +1,7 @@
-var Reason = options => {
+var Reason = (options = {}) => {
   let { showDebug } = options;
 
-  // Utilities
+  // Errors and logging
 
   const error = new Proxy({
           append (e1, which, ...args) { try { error[which](...args) } catch (e2) { throw new Error(e1.message + '\n' + e2.message) } }
@@ -9,7 +9,7 @@ var Reason = options => {
           if (prop in o) return o[prop];
           else return (...args) => { throw new Error((({
             // Interpreter errors
-            duplicate: n => `Interpreter error: name '${n}' already exists`,
+            duplicate: n => `Interpreter error: ${n} already exists`,
             nosig: n => `Interpreter error: no signature has been declared for ${n}`,
             notfound: n => `Interpreter error: declaration for ${n} cannot be found`,
             unchecked: () => 'Interpreter error: not yet typechecked',
@@ -52,7 +52,7 @@ var Reason = options => {
             tc_dcon_cannot_infer_params: () => 'Type error: cannot infer data constructor parameters. Try adding an annotation.',
             tc_dcon_arg_len: (mlen, tlen) => `Type error: data constructor given wrong number of arguments - (${mlen} instead of ${tlen})`,
             tc_mismatch_con: which => `Type error: ${which} constructor given, but expected ${which === 'type' ? 'data' : 'type'} constructor`,
-            tc_term_not_found: which => `Type error: identifier ${which} not found`,
+            tc_term_not_found: (ctor, type) => `Type error: constructor ${ctor} not found${type ? ` for type ${type}` : ''}`,
 
             tc_erased_var_subst: () => 'Type error: erased variable used in lambda',
             tc_erasure_mismatch: () => 'Type error: erasure mismatch',
@@ -538,41 +538,50 @@ var Reason = options => {
     toString () { return this.items.map(x => x.toString()).join(' ')  }
   }
 
-  class Decl extends AST('sig', 'def', 'recdef', 'data', 'datasig') {
+  class Decl extends AST('sig', 'def', 'data', 'datasig') { // is recdef being fully handled by eval case?
     toString () {
       switch (this.ctor) {
         case 'sig': return `SIG: ${this[0].toString()} : ${('quote' in this[1] ? this[1].quote() : this[1]).toString()}`
         case 'def': return `DEF: ${this[0].toString()} := ${('quote' in this[1] ? this[1].quote() : this[1]).toString()}`
-        case 'data': return `DATA: ${this[0].toString()} ${this[1].tail().toString()} : ${this[1].items.slice(-1)[0].toString()}` +
+        case 'data': return `DATA: ${this[0].toString()}${
+          this[1].items.length - 1 ? ' ' + this[1].tail().toString() : ''} : ${this[1].items.slice(-1)[0].toString()}` +
           this[2].map(ctor => `\n  ${ctor.toString()}`).join('')
+        case 'datasig': return `DATASIG: ${this[0].toString()} ${this[1].tail().toString()} : ${this[1].items.slice(-1)[0].toString()}`
       }
     }
   }
   class Ctor extends AST('ctor') {
-    toString () { return `CTOR: ${this[0].toString()} ${this[1].tail().toString()} : ${this[1].items.slice(-1)[0].toString()}` }
+    toString () { return `CTOR: ${this[0].toString()}${
+      this[1].items.length - 1 ? ' ' + this[1].tail().toString() : ''} : ${this[1].items.slice(-1)[0].toString()} : ${this[1].items.slice(-1)[0].toString()}` }
   }
 
   class Value extends AST('vlam', 'vstar', 'vpi', 'vfree', 'vtcon', 'vdcon', 'vapp', 'vcase') {
     quote () { return quote(this) }
     print () { return print(quote(this)) }
+    toString () { return 'VAL ' + quote(this).toString() }
   }
 
-  class Arg extends AST('arg') { // Only dcons and patdcons have Args
+  class Arg extends AST('arg') { // Only dcons and patdcons have Args. TODO: ('runtime', 'erased')
     equal (operand) { return this[0].equal(operand[0]) && this[1] === operand[1] }
     toString () { return (this[1] ? 'Erased ' : '') + this[0].toString() }
   }
 
-  class Pat extends AST('patdcon', 'patvar', 'patbvar') { // TODO: add inaccessible patterns
+  class Pat extends AST('patdcon', 'patvar', 'patbvar') {
     toString () {
       switch (this.ctor) {
-        case 'patdcon': return `PatDC:${this[0].toString()}${this[1].map(x => ` (${x.toString()})`).join('')}`
-        case 'patvar': return 'PatVar ' + this[0].toString()
+        case 'patdcon': return `${this[2] ? 'Inac ' : ''}PatDC:${this[0].toString()}${this[1].map(x => ` (${x.toString()})`).join('')}`
+        case 'patvar': return `${this[1] ? 'Inac ' : ''}PatVar ${this[0].toString()}`
         case 'patbvar': return 'PatBVar ' + this[0]
       }
     }
   }
-  class Match extends AST('match') {
-    toString () { return `PatMatch @ ${this[0].toString()} := ${this[1].toString()}` }
+  class Match extends AST('clause', 'absurd') {
+    toString () {
+      switch (this.ctor) {
+        case 'clause': return `PatMatch @ ${this[0].toString()} := ${this[1].toString()}`
+        case 'absurd': return `Absurd @ ${this[0].toString()}`
+      }
+    }
   }
 
 
@@ -727,7 +736,7 @@ var Reason = options => {
                 .then(([pat, env]) => {
                   advance('Pattern equation separator?', {value: 'op', id: ':='});
                   return parseTerm(env, 'ann')
-                    .then(term => endTest([new Match({match: [pat, term]})])) // This should be a binder
+                    .then(term => endTest([new Match({clause: [pat, term]})])) // This should be a binder
                 })
                 .catch(() => error.parser_notvalid('pattern'))
             })
@@ -948,14 +957,14 @@ var Reason = options => {
         )
       }
 
-      function pattern (env, name) {
+      function pattern (env, name) { // TODO: inacessible patterns
         function atomic () {
           // (pat)
           return enclosure(['parens'], () => pattern(env, name).then(([res, env]) => res))
             // _
             .catch(() => alt(() => {
               advance('Wildcard?', {id: '_'});
-              return new Pat({patvar: [new Name({global: [parser.fresh()]})]})
+              return new Pat({patvar: [ new Name({global: [parser.fresh()]}), false ]})
             }))
             // t *or* x
             .catch(() => {
@@ -963,10 +972,10 @@ var Reason = options => {
               assertId();
               let nestedName = token.id;
               if (~parser.tnames.indexOf(nestedName)) error.tc_mismatch_con('type');
-              else if (~parser.dnames.indexOf(nestedName)) return new Pat({patdcon: [new Name({global: [nestedName]}), []]})
+              else if (~parser.dnames.indexOf(nestedName)) return new Pat({patdcon: [new Name({global: [nestedName]}), [], false]})
               else {
                 let i = env.findIndex(bv => bv.id === nestedName);
-                return ~i ? new Pat({patbvar: [i]}) : new Pat({patvar: [ new Name({global: [nestedName]}) ]})
+                return ~i ? new Pat({patbvar: [i]}) : new Pat({patvar: [ new Name({global: [nestedName]}), false ]})
               }
             })
         }
@@ -984,7 +993,7 @@ var Reason = options => {
                 ts.push(new Arg({arg: [term, !!ep]}));
                 return loop()
               })
-          })().catch(() => new Pat({patdcon: [new Name({global: [name]}), ts]}));
+          })().catch(() => new Pat({patdcon: [ new Name({global: [name]}), ts, false ]}));
           else throw new Error('')
         }).catch(atomic)
           .then(res => [res, env])
@@ -1061,9 +1070,9 @@ var Reason = options => {
         }
       } else if (testObj(Pat)) {
         switch (obj.ctor) {
-          case 'patvar': return recPrint(obj[0], 0, int2)
+          case 'patvar': return (obj[2] ? '.' : '') + recPrint(obj[0], 0, int2)
           case 'patbvar': anns[int2 - obj[0] - 1] = 1; return vars(obj[0])
-          case 'patdcon': return parensIf(int1 > 1, recPrint(obj[0], 0, int2) +
+          case 'patdcon': return (obj[1] ? '.' : '') + parensIf(int1 > 1, recPrint(obj[0], 0, int2) +
           obj[1].map(arg => ' ' + (arg[1] ? `{${recPrint(arg[0], 1, int2)}}` : recPrint(arg[0], 1, int2))).join(''))
         }
       } else if (testObj(Tele)) {
@@ -1145,7 +1154,7 @@ var Reason = options => {
         .map(arg => new Arg({arg: [ evaluate(arg[0], ctx), arg[1] ]})) ].concat([term[2]].filter(x => x))})
 
       case 'case': switch ((vscrut = evaluate(term[0], ctx)).ctor) {
-        case 'vfree': return new Value({vcase: [ vscrut, term[1].map(x => new Match({match: [ x[0], evaluate(x[1], ctx) ]})) ]});
+        case 'vfree': return new Value({vcase: [ vscrut, term[1] ]});
         case 'vdcon':
         let match = term[1].find(match => match[0].ctor !== 'patdcon' || vscrut[0].equal(match[0][0]));
         switch (match[0].ctor) {
@@ -1181,7 +1190,7 @@ var Reason = options => {
       case 'vdcon': return new Term({dcon: [ value[0], value[1]
         .map(arg => new Arg({arg: [ quote(arg[0], index), arg[1] ]})) ].concat([value[2]].filter(x => x))})
       case 'vapp': return new Term({app: [ quote(value[0], index), quote(value[1], index), value[2] ]})
-      case 'vcase': return new Term({case: [ quote(value[0]), value[1].map(match => new Match({match: [ match[0], quote(match[1]) ]})) ]})
+      case 'vcase': return new Term({case: [ quote(value[0]), value[1] ]})
     }
   }
 
@@ -1259,7 +1268,7 @@ var Reason = options => {
     }
 
     function check (ctx, term, typeVal, index = 0) { //context, term, term, number -> term:term, type:value
-      // log('check', term.print(), term, typeVal.print(), typeVal);
+      // log('check', term.toString(), term, typeVal.toString(), typeVal);
       // log('ctx', ...ctx.decls.map(x => x.toString()))
       let innerArgs;
       return Promise.resolve().then(() => {
@@ -1281,9 +1290,9 @@ var Reason = options => {
           if (typeof term[2] !== 'undefined' && 'equal' in term[2] && !term[2].equal(type)) error.tc_mismatch(term[2], type, term);
           if (term.length === 1) term.push([]) //?
           let [typei, itemsi] = unapplyType(type), match = ctx.lookup(term[0], 'ctor', typei[0]);
-          if (match.cdef === null || match.ddef === null) error.tc_term_not_found(term[0][0]);
-          if (match.cdef.length - 1 > term[1].length) error.tc_dcon_arg_len(term[1].length, match.cdef.length - 1);
-          if (match.cdef.length - 1 < term[1].length)
+          if (match.cdef === null || match.ddef === null) error.tc_term_not_found(term[0][0], typei[0][0]);
+          if (match.cdef.length - 1 > term[1].filter(x => !x[1]).length) error.tc_dcon_arg_len(term[1].length, match.cdef.length - 1); // BUG: erased/runtime
+          if (match.cdef.length - 1 < term[1].filter(x => !x[1]).length)
             return check(ctx, term[1].slice(match.cdef.length - 1).reduce((acc, tm) => new Term({app: [acc, ...tm]}),
               new Term({dcon: [term[0], term[1].slice(0, match.cdef.length - 1)].concat([term[2]].filter(x => x))})), typeVal, index);
           let items = substTele(ctx, match.ddef.tail(), itemsi, match.cdef);
@@ -1299,7 +1308,7 @@ var Reason = options => {
                 let [decls1, evars] = declarePat(ctx, match[0], false, typeTerm), // TODO: check erased vars aren't used
                     decls2 = equateWithPat(ctx, term[0], match[0], typeTerm);
                 return check(ctx.cons(decls1.concat(decls2)), match[1], typeVal, index)
-                  .then(({term}) => acc.concat([new Match({match: [match[0], term]})]))
+                  .then(({term}) => acc.concat([new Match({clause: [match[0], term]})]))
               }), Promise.resolve([]))
                 .then(matches => exhaustivityCheck(ctx, term[0], typeTerm, term[1].map(x => x[0]))
                   .then(() => ({term: new Term({case: [term[0], matches, typeVal]}), type: typeVal})))
@@ -1327,15 +1336,15 @@ var Reason = options => {
         case 'dcon': return new Term({dcon: [ term2[0],
           term2[1].map(arg => new Arg({arg: [ subst(term1, arg[0], ep, index), arg[1]]})) ].concat([term2[2]].filter(x => x))})
         case 'case': return new Term({case: [ subst(term1, term2[0], ep, index),
-          term2[1].map(match => new Match({match: [ substPat(term1, match[0], ep, index), subst(term1, match[1], ep, index) ]})) ].concat([term2[2]].filter(x => x))})
+          term2[1].map(match => new Match({clause: [ substPat(term1, match[0], ep, index), subst(term1, match[1], ep, index) ]})) ].concat([term2[2]].filter(x => x))})
         case 'star': case 'freevar': return term2
       }
     }
     function substPat (term, pat, ep, index) {
       switch (pat.ctor) {
         case 'patvar': return pat
-        case 'patbvar': return index !== pat[0] ? pat : !ep ? new Pat({patvar: [term[0]]}) : error.tc_erased_var_subst()
-        case 'patdcon': return new Pat({patdcon: [ pat[0], pat[1].map(arg => new Arg({arg: [ substPat(term, arg[0], ep, index), arg[1] ]})) ]})
+        case 'patbvar': return index !== pat[0] ? pat : !ep ? new Pat({patvar: [term[0], false]}) : error.tc_erased_var_subst()
+        case 'patdcon': return new Pat({patdcon: [ pat[0], pat[1].map(arg => new Arg({arg: [ substPat(term, arg[0], ep, index), arg[1] ]})), pat[2] ]})
       }
     }
     function unsubst (term1, term2, index = 0) {
@@ -1349,14 +1358,14 @@ var Reason = options => {
         case 'dcon': return new Term({dcon: [ term2[0],
           term2[1].map(arg => new Arg({arg: [ unsubst(term1, arg[0], index), arg[1]]})) ].concat([term2[2]].filter(x => x))})
         case 'case': return new Term({case: [ unsubst(term1, term2[0], index),
-          term2[1].map(match => new Match({match: [ unsubstPat(term1, match[0], index), unsubst(term1, match[1], index) ]})) ].concat([term2[2]].filter(x => x))})
+          term2[1].map(match => new Match({clause: [ unsubstPat(term1, match[0], index), unsubst(term1, match[1], index) ]})) ].concat([term2[2]].filter(x => x))})
         case 'star': case 'boundvar': return term2
       }
     }
     function unsubstPat (term, pat, index) {
       switch (pat.ctor) {
         case 'patbvar': case 'patvar': return pat[0].ctor === 'local' && index === pat[0][0] ? new Pat({patbvar: [term[0]]}) : pat
-        case 'patdcon': return new Pat({patdcon: [ pat[0], pat[1].map(arg => new Arg({arg: [ unsubstPat(term, arg[0], index), arg[1] ]})) ]})
+        case 'patdcon': return new Pat({patdcon: [ pat[0], pat[1].map(arg => new Arg({arg: [ unsubstPat(term, arg[0], index), arg[1] ]})), pat[2] ]})
       }
     }
 
@@ -1371,7 +1380,7 @@ var Reason = options => {
         case 'dcon': return new Term({dcon: [ term2[0],
           term2[1].map(arg => new Arg({arg: [ substFV(term1, arg[0], name), arg[1] ]})) ].concat([term2[2]].filter(x => x))})
         case 'case': return new Term({case: [ substFV(term1, term2[0], name),
-          term2[1].map(match => new Match({match: [ match[0], substFV(term1, match[1], name) ]})) ]})
+          term2[1].map(match => new Match({clause: [ match[0], substFV(term1, match[1], name) ]})) ]})
         case 'star': case 'boundvar': return term2
       }
     }
@@ -1417,21 +1426,33 @@ var Reason = options => {
     }
 
     function tcArgTele (ctx, args, items) {
-      let rightItems = items.slice(), runtimeArgs = [],
+      // log('tcArgTele', args.map(x => x.toString()), items.map(x => x.toString()))
+      let rightItems = items.slice(), runtimeArgs = [], item,
           loop = i => {
             if (rightItems.length === 0) return Promise.resolve();
-            let item = rightItems[0], arg = args[i];
-            if (['erased', 'term'][arg[1]] === item.ctor) throw error.tc_erasure_mismatch();
-            switch (item.ctor) {
-              case 'term': return check(ctx, arg[0], item[1]).then(({term}) => {
+            if ((item = rightItems[0]).ctor === 'erased' && args.length === 0) {
+              rightItems.shift();
+              return loop(i)
+            }
+            let arg = args[i];
+            function doCheck () {
+              return check(ctx, arg[0], item[1]).then(({term}) => {
                 arg[0] = term;
                 rightItems = doSubst(ctx, [[rightItems.shift()[0], arg[0]]], new Tele(...rightItems));
                 runtimeArgs.push(arg)
                 return loop(i + 1)
               })
+            }
+            switch (item.ctor) {
+              case 'term':
+              if (arg[1]) throw error.tc_erasure_mismatch();
+              else return doCheck()
 
-              case 'erased': rightItems.splice(0, 1);
-              return loop(i)
+              case 'erased':
+              if (!arg[1]) {
+                rightItems.shift();
+                return loop(i);
+              } else return doCheck()
 
               case 'constraint':
               if (item[0].equal(item[1])) return loop(i + 1);
@@ -1480,7 +1501,7 @@ var Reason = options => {
         if (ep) error.tc_erased_pat();
         let [typei, itemsi] = unapplyType(type), result = ctx.lookup(pat[0], 'ctor', typei[0]),
             items = substTele(ctx, result.ddef.tail(), itemsi, result.cdef);
-        return declarePats(ctx, ...pat, items.slice(0, -1))
+        return declarePats(ctx, pat[0], pat[1], items.slice(0, -1))
       }
     }
     function declarePats (ctx, name, patArgs, items) {
@@ -1685,7 +1706,7 @@ var Reason = options => {
           })
         )
 
-        case 'recdef': case 'datasig': error.tc_internal()
+        case 'datasig': error.tc_internal()
       }
     }), Promise.resolve([])).catch(e => {console.log(e);throw e})
   }
@@ -1700,205 +1721,4 @@ var Reason = options => {
   Object.defineProperty(R, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))) } }); // TODO: make all props read-only
 
   return R
-};
-
-
-
-
-// Testing
-
-const R = Reason({showDebug: false});
-
-let id1, id2, Void, Unit, Bool, Nat, Vec, Fin, Sigma;
-let id3, tt, lamTest, plus, one_plus_one, listNat, theList, listMap, allAddTwo, someList, half, tail, vecNat, theVec;
-let Id_, cong, Leq_;
-
-let test;
-
-(async () => {
-  let passFail = obj => {
-    for (let test in obj) try { console.log(obj[test]()) }
-      catch (e) { console.log(test, e) }
-  }
-
-  // // functions, lambdas
-  // id1 = new R
-  //   .Sig('id', '(T : Type) -> T -> T')
-  //   .Def('(t, x => x)');
-  //
-  // // functions with builtins
-  // id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
-  //   { toString () { return this[0].toString() },
-  //   valueOf () { return this[0].valueOf() } }
-  // );
-  //
-  //
-  // // types
-  // Void = new R.Data('Void', 'Type', []);
-  // Unit = await new R.Data(
-  //   'Unit', 'Type',
-  //   [ { 'TT : Unit':
-  //     { toString: () => '()',
-  //       valueOf: () => null } } ],
-  //   { fromJS: () => Unit().tt() }
-  // ).ready;
-  //
-  // let unit = Unit();
-  // console.log('unit', unit, unit.term.toString(), unit.type.toString(), unit.toString());
-  // tt = Unit().tt();
-  // console.log('tt', tt, tt.term.toString(), tt.type.toString(), tt.toString(), tt.valueOf())
-  //
-  //
-  // Bool = new R.Data(
-  //   'Bool', 'Type',
-  //   [ { 'F : Bool': { toString: () => 'F', valueOf: () => false } },
-  //     { 'T : Bool': { toString: () => 'T', valueOf: () => true } } ],
-  //   { fromJS: v => Bool()[(!!v + '')[0]]() }
-  // );
-  // // f = new R.Def("f", "f : Bool") // circular definition!
-  // lamTest = new R.Def('lamTest', '((x => x) : Bool -> Bool) F : Bool');
-
-  Nat = new R.Data(
-    "Nat", 'Type',
-    [ { "Z : Nat": { toString: () => 'Z', valueOf: () => 0 } },
-      { "S : (n:Nat) -> Nat": {
-        toString () { return 'S' + this[0].toString() },
-        valueOf () { return this[0].valueOf() + 1 } } } ],
-    { fromJS: v => ((z, s, p = () => v-- ? s(p()) : z) => p())(Nat().z(), x => Nat().s(x)) }
-  );
-
-  // await R.ready;
-  // let nat2 = Nat().s(Nat().s(Nat().z()));
-  // console.log(nat2, nat2.term.print(), nat2.toString(), nat2.valueOf());
-  // let nat3 = Nat().fromJS(3);
-  // console.log(nat3.toString(), nat3.type.print())
-  //
-  // // pattern matching
-  // plus = new R
-  //   .Sig("plus", "Nat -> Nat -> Nat")
-  //   // .Def([
-  //   //   "@ Z n := n",
-  //   //   "@ (S m) n := S (plus m n)"
-  //   // ])
-  //   .Def({
-  //     "x y | x":
-  //     [ "Z   := y",
-  //       "S m := S (plus m y)" ]
-  //   });
-  //
-  // one_plus_one = await new R.Sig(
-  //   "one_plus_one", "Nat" ).Def(
-  //   "plus (S Z) (S Z)"     ).ready;
-  //
-  // console.log(`%cone_plus_one =`, 'font-weight: bold; color: deeppink', one_plus_one.result.print());
-  //
-  // List = new R.Data(
-  //   "List", "(A : Type) : Type",
-  //   [ { "Nil : List A": { toString: () => '[]', valueOf: () => [] } },
-  //     { "Cons : (x : A)(xs : List A) -> List A":
-  //       { toString () { return this[1].toString() + ' : ' + this[0].toString() },
-  //         valueOf () { return this[1].valueOf().concat([ this[0].valueOf() ]) } } } ],
-  //   { fromJS (v) { return ((n, c, p = () => v.length ? c(v.pop(), p()) : n) => p())(this.nil(), (x, y) => this.cons(this.a.fromJS(x), y)) } } );
-  //
-  //
-  // let a = await plus(Nat().s(Nat().s(Nat().z()))).ready;
-  // console.log(a, a.result.print())
-  // let b = await a(Nat().s(Nat().z())).ready;
-  // console.log(b, b.result.print())
-  //
-  //
-  // listNat = List(Nat());
-  // console.log(listNat);
-  // theList = listNat.cons(Nat().z(), listNat.cons(Nat().s(Nat().z()), listNat.nil()));
-  // console.log(theList, theList.toString(), theList.valueOf());
-  // let list3 = await List(Bool()).fromJS([false, false, true, false]).ready;
-  // console.log(list3.valueOf(), list3.type.print())
-  //
-  //
-  // listMap = new R.Sig(
-  //   "listMap", "{A B : Type} -> (A -> B) -> List A -> List B" ).Def({
-  //   "{A} {B} f xs | xs": // {A B} ?
-  //   [ "Nil := Nil",
-  //     "Cons a as := Cons (f a) (listMap {A} {B} f as)" ] }); // TODO: allow erased terms to not be written, ie listMap f ys
-  //
-  // allAddTwo = new R.Sig(
-  //   "allAddTwo", "List Nat -> List Nat"    ).Def(
-  //   "listMap {Nat} {Nat} (plus (S (S Z)))" );
-  //
-  // someList = await new R.Sig(
-  //   "someList", "List Nat"                             ).Def(
-  //   "allAddTwo (Cons (Z) (Cons (S Z) (Cons (Z) Nil)))" ).ready;
-  //
-  // console.log(`%csomeList =`, 'font-weight: bold; color: deeppink', someList.result.print());
-
-
-
-  Vec = new R.Data(
-    "Vec", "(A : Type) : Nat -> Type",
-    [ { "Nil : Vec A Z": { toString: () => '<>', valueOf: () => [] } },
-      { "Cons : {n : Nat}(x : A)(xs : Vec A n) -> Vec A (S n)":
-        { toString () { return this[1].toString() + ' :: ' + this[0].toString() },
-          valueOf () { return this[1].valueOf().concat([this[0].valueOf()]) } } } ],
-    { fromJS (v) { return ((n, c, p = () => v.length ? c(v.pop(), p()) : n) => p())(this.nil(), (x, y) => this.cons(this.a.fromJS(x), y)) } } );
-
-  tail = new R.Sig(
-    "tail", "{A : Type}{m : Nat} -> Vec A (S m) -> Vec A m"
-  ).Def({
-    "{A} {m} v | v":
-    [ "Cons {m} y ys := ys" ]
-  });
-
-  await R.ready;
-
-  vecNat = Vec(Nat());
-  console.log(vecNat);
-  // theVec = await vecNat.cons(Nat.s(Nat.z()), await vecNat.cons(Nat.s(Nat.s(Nat.z())).ready, vecNat.nil())).ready;
-  theVec = await vecNat.fromJS([2,1]).ready;
-  let tailVec = await tail(Nat(), Nat().s(Nat().z()), theVec).ready;
-  console.log(tailVec, tailVec.term.print(), '--', tailVec.result.print())
-
-
-  Fin = new R.Data(
-    "Fin", "(n : Nat) : Type",
-    [ { "Zero : {n : Nat} -> Fin (S n)":
-        { toString () { return`Zero [${this.value[0].toString()}]` },
-          valueOf () { return this[0].valueOf() - 1 } } },
-      { "Succ : {n : Nat}(i : Fin n) -> Fin (S n)":
-        {  toString () { return `Succ [${this.value[1].valueOf() - 1}] ` + this.value[1].toString() },
-           valueOf () { return this[1].valueOf() - 1 } } } ],
-    { fromJS: v => ((z, s, p = () => v-- ? s(p()) : z) => p())(Fin().zero(), x => Fin().succ(x)) } );
-
-  Sigma = new R.Data(
-    "Sigma", "(A : Type)(B : A -> Type) : Type",
-    [ { "DProd : (x : A)(y : B x) -> Sigma A B":
-        { toString () { return `Σ[${this[0].toString()}, ${this[1](this[0]).toString()}]` },
-          valueOf () { return [this[0].valueOf(), this[1](this[0]).valueOf()] } } } ],
-    { fromJS: ([v, f]) => Sigma().dprod(v, f) } );
-
-  // half = new R.Sig(
-  //   "half", "Nat -> Nat"
-  // ).Def({
-  //   "x | x":
-  //   [ "Z       := Z",
-  //     "S  Z    := Z",
-  //     "S (S m) := S (half m)" ]
-  // })
-  //
-  // // proof example
-  // Id_ = new R.Data(
-  //   "Id'", "{A : Type}(x : A) : A -> Type",
-  //   [ "Refl : {x : A} -> Id' {A} x x" ]
-  // )
-  // cong = new R
-  //   .Sig("cong", "{a b : Type}{x, y : a} -> (f : a -> b) -> Id' x y -> Id' (f x) (f y)")
-  //   .Def("@ f Refl := Refl")
-
-  Leq_ = new R.Data(
-    "Leq'", "Nat -> Nat -> Type",
-    [ "LZ : {n : Nat} -> Leq' (Z) n", // TODO: all right identifiers parse as arguments, including tnames and dnames
-      "LS : {m n : Nat} (p : Leq' m n) -> Leq' (S m) (S n)" ]
-  );
-  // let two_lt_four = new R.Sig(
-  //   "two_lt_four", "Leq' (S (S Z)) (S (S (S (S Z))))"          ).Def(
-  //   "LS {S Z} {S (S (S Z))} (LS {Z} {S (S Z)} (LZ {S (S Z)}))" )
-})().catch(console.log)
+}
