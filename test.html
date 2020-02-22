@@ -17,11 +17,11 @@
 
   // Testing
 
-  const R = Reason(/*{debug: {lexer: false, parser: false, parsedDecl: false, typechecker: false}}*/);
+  const R = Reason({debug: {lexer: false, parser: false, parsedDecl: false, typechecker: false}});
 
   let ap, id1, id2, Void, Unit, Bool, Nat, Vec, Fin, Sigma;
   let id3, tt, lamTest, plus, _plus_, onePlusOne, listNat, theList, listMap, allAddTwo, someList, half, tail, vecNat, theVec;
-  let Id, cong, Leq, antisym;
+  let Id, cong, Leq, twoLTone, antisym;
 
   let test;
 
@@ -183,7 +183,7 @@
           { toString () { return `Σ[${this[0].toString()}, ${this[1](this[0]).toString()}]` },
             valueOf () { return [this[0].valueOf(), this[1](this[0]).valueOf()] } } } ],
       { fromJS: ([v, f]) => Sigma().dprod(v, f) } );
-    //
+
     // half = new R.Sig(
     //   "half", "Nat -> Nat"
     // ).Def({
@@ -192,23 +192,23 @@
     //     "S  Z    := Z",
     //     "S (S m) := S (half m)" ]
     // })
-    //
+
     // proof example
     Id = new R.Data(
       "Id'", "{A : Type}(x : A) : A -> Type",
       [ "Refl : Id' x x" ]
     )
-    cong = new R // Prints bad, typechecks bad
-      .Sig("cong", "{a b : Type}{x y : a} -> (f : a -> b) -> Id' x y -> Id' (f x) (f y)")
-      .Def("@ f Refl := Refl")
+    // cong = new R // Prints bad, typechecks bad
+    //   .Sig("cong", "{a b : Type}{x y : a} -> (f : a -> b) -> Id' x y -> Id' (f x) (f y)")
+    //   .Def("@ f Refl := Refl")
 
-    Leq = new R.Data( // _<=_ , Z <= n
-      "Leq'", "Nat -> Nat -> Type",
-      [ "LZ : {n : Nat} -> Leq' (Z) n", // TODO: all right identifiers parse as arguments, including tnames and dnames
-        "LS : {m n : Nat} (p : Leq' m n) -> Leq' (S m) (S n)" ]
+    Leq = new R.Data(
+      "_<=_ r20", "Nat -> Nat -> Type",
+      [ "LZ : {n : Nat} -> ((Z) <= n)", // TODO: all right identifiers parse as arguments, including tnames and dnames
+        "LS : {m n : Nat} (p : m <= n) -> ((S m) <= (S n))" ]
     );
-    let two_lt_one = new R.Sig(
-      "two_lt_one", "Leq' (S (S Z)) (S Z)" ).Def(
+    twoLTone = new R.Sig(
+      "twoLTone", "(S (S Z)) <= (S Z)" ).Def(
       "LS (LS LZ)" );
     // antisym = new R.Sig(
     //   "antisym", "(m n : Nat) -> Leq' m n -> Leq' n m -> Id' Nat m n" ).Def([
