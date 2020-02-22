@@ -646,7 +646,7 @@ var Reason = (options = {}) => {
         token = next();
       }
       function assertId () { if (!('id' in token) || 'value' in token) error.parser_notid(token, index) }
-      function assertOp () { if (!('id' in token) || ('value' in token && token.value !== 'op')) error.parser_mismatch(token, index) }
+      function assertOp () { if (!('id' in token && 'value' in token && token.value === 'op')) error.parser_mismatch(token, index) }
 
       function alt (fn) { // TODO: move the environment state into alt
         let rewind = index;
@@ -996,7 +996,7 @@ var Reason = (options = {}) => {
         )
       }
 
-      function pattern (env, name) { // TODO: inacessible patterns
+      function pattern (env, name) { // TODO: inaccessible patterns
         function atomic () {
           // (pat)
           return enclosure(['parens'], () => pattern(env, name).then(([res, env]) => res))
@@ -1056,7 +1056,8 @@ var Reason = (options = {}) => {
       }
 
       function mixfix (env, mbTerm, pos = 0) { // TODO: mixfix erasure {A} x = x
-        return altMsg('Try Mixfix Expression', () => {// x a_b...[...] *or* _a_b...[...]
+        // x a_b...[...] *or* _a_b...[...]
+        return altMsg('Try Mixfix Expression', () => {
           advance(`Mixfix operator in ${!!mbTerm ? 'second' : 'first' } position?`);
           assertOp();
           let ts = [], name = token.id, [mi, pi] = findMixfix(name, parser.mixfixes.map(x => x[0]));
@@ -1064,40 +1065,44 @@ var Reason = (options = {}) => {
             if (!mbTerm) return parseTerm(env, 'app').then(tm => mixfix(env, tm));
             throw new Error('');
           }
-          let [mfName, fixity] = parser.mixfixes[mi],
-              lexAp = lexMixfix(name), lexOp = lexMixfix(mfName), skipArgs = lexAp.filter(x => x === '_').length;
+          let [mfName, fixity] = parser.mixfixes[mi], lexAp = lexMixfix(name), lexOp = lexMixfix(mfName);
           if (mbTerm) {
             if (lexAp[0] === '_') throw new Error('');
             ts.push(mbTerm)
           }
           if (pi > 1) error.parser_mixfix_miss_id(mfName, lexOp.slice(!!mbTerm, pi).join(''));
+          ts = ts.concat(lexAp.filter(x => x === '_').fill(false));
           lexOp.splice(0, lexAp.length + pi);
-          ts = ts.concat(Array(skipArgs).fill(false));
           return (function loop () {
             if (lexOp.length === 1 && lexOp[0] === '_') return parseTerm(env, 'app').then(tm => {
+              // ..._a x
               ts.push(tm);
               lexOp.shift();
               return loop()
             });
             return alt(() => parseTerm(env, 'app').then(tm => {
-              // x a_..._b y c...[...]
+              // ..._a x b_...[...]
               advance('Next mixfix operator?');
               assertOp();
               name = token.id;
               lexOp.shift(); // the '_' for the current term
               lexAp = lexMixfix(name);
               if (lexAp.some((token, i) => token !== lexOp[i])) error.parser_mixfix_bad(name, mfName);
-              skipArgs = lexAp.filter(x => x === '_');
-              (ts = ts.concat(Array(skipArgs).fill(false))).push(tm);
+              (ts = ts.concat(lexAp.filter(x => x === '_').fill(false))).push(tm);
               lexOp.splice(0, lexAp.length);
               return loop()
             }))
           })()
             .catch(err => {
               if (!err.message) error.parser_mismatch(token, index);
-              let falses = ts.filter(x => !x), holes = falses.length, lamTm = ts.reduce((a, t, i) =>
+              let falses = ts.filter(x => !x), holes = falses.length, mfTerm;
+              if (~parser.tnames.indexOf(mfName)) mfTerm = new Term({tcon: [ new Name({global: [mfName]}),
+                ts.map(t => t || new Term({boundvar: [--holes + env.length]})), [] ]});
+              else if (~parser.dnames.indexOf(mfName)) mfTerm = new Term({tcon: [ new Name({global: [mfName]}),
+                ts.map(t => new Arg({arg: [ t || new Term({boundvar: [--holes + env.length]}), false ]})), [] ]})
+              else mfTerm = ts.reduce((a, t, i) =>
                 new Term({app: [ a, t || new Term({boundvar: [--holes + env.length]}), false ]}), new Term({freevar: [ new Name({global: [mfName]}) ]}));
-              return falses.reduce(a => new Term({lam: [a, false]}), lamTm)
+              return falses.reduce(a => new Term({lam: [a, false]}), mfTerm)
             })
         })
       }
@@ -1157,9 +1162,9 @@ var Reason = (options = {}) => {
         }
       } else if (testObj(Pat)) {
         switch (obj.ctor) {
-          case 'patvar': return (obj[2] ? '.' : '') + recPrint(obj[0], 0, int2)
+          case 'patvar': return (obj[1] ? '.' : '') + recPrint(obj[0], 0, int2)
           case 'patbvar': anns[int2 - obj[0] - 1] = 1; return vars(obj[0])
-          case 'patdcon': return (obj[1] ? '.' : '') + parensIf(int1 > 1, recPrint(obj[0], 0, int2) +
+          case 'patdcon': return (obj[2] ? '.' : '') + parensIf(int1 > 1, recPrint(obj[0], 0, int2) +
           obj[1].map(arg => ' ' + (arg[1] ? `{${recPrint(arg[0], 1, int2)}}` : recPrint(arg[0], 1, int2))).join(''))
         }
       } else if (testObj(Tele)) {
@@ -1804,7 +1809,7 @@ var Reason = (options = {}) => {
 
   // API
 
-  const R = { Data, Sig, Def, context },
+  const R = { Data, Sig, Def, context, parser },
         sequence = (p => fn => p = fn ? p.then(fn) : p)(Promise.resolve());
   Object.defineProperty(R, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))) } }); // TODO: make all props read-only
 
