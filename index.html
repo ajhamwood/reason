@@ -175,11 +175,29 @@
 var app = new $.Machine({
   sections: [
     ['Documentation and tutorial coming soon...', [], [
-      `let id = await new R.Def(`,
-      `  "id", "({t}, x => x) : {T : Type} -> T -> T"`,
-      `).ready;`,
-      `log(id.print);`,
-      `log(id.type.print())`
+      `let Nat = new R.Data(`,
+      `  "Nat", "Type",`,
+      `  [ "Z : Nat",`,
+      `    "S : (n : Nat) -> Nat" ]);`,
+      ``,
+      `let plus = new R.Sig(`,
+      `  "_+_ r6", "Nat -> Nat -> Nat" ).Def({`,
+      `  "x y | x":`,
+      `  [ "Z   := y",`,
+      `    "S m := S (m + y)" ]});`,
+      ``,
+      `let plusTwo = new R.Def(`,
+      `  "plusTwo", "(_+ (S (S Z))) : Nat -> Nat" );`,
+      ``,
+      `let twoPlusTwo = new R.Def(`,
+      `  "twoPlusTwo", "plusTwo (S (S Z)) : Nat" );`,
+      ``,
+      `await R.ready;`,
+      ``,
+      `[Nat(), plus, plusTwo, twoPlusTwo]`,
+      `  .map(x => log(x.term.print()));`,
+      ``,
+      `log('"2 + 2 ="', twoPlusTwo.result.print())`
     ].join('\n'), false]
   ]
 });
