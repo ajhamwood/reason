@@ -17,10 +17,10 @@
 
   // Testing
 
-  const R = Reason({showDebug: false});
+  const R = Reason(/*{debug: {lexer: false, parser: false, parsedDecl: false, typechecker: false}}*/);
 
   let ap, id1, id2, Void, Unit, Bool, Nat, Vec, Fin, Sigma;
-  let id3, tt, lamTest, plus, onePlusOne, listNat, theList, listMap, allAddTwo, someList, half, tail, vecNat, theVec;
+  let id3, tt, lamTest, plus, _plus_, onePlusOne, listNat, theList, listMap, allAddTwo, someList, half, tail, vecNat, theVec;
   let Id, cong, Leq, antisym;
 
   let test;
@@ -31,43 +31,43 @@
         catch (e) { console.log(test, e) }
     }
 
-    // // functions, lambdas
-    // id1 = new R
-    //   .Sig('id', '(T : Type) -> T -> T')
-    //   .Def('(t, x => x)');
-    //
-    // // functions with builtins
-    // id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
-    //   { toString () { return this[0].toString() },
-    //   valueOf () { return this[0].valueOf() } }
-    // );
-    //
-    //
-    // // types
-    // Void = new R.Data('Void', 'Type', []);
-    // Unit = await new R.Data(
-    //   'Unit', 'Type',
-    //   [ { 'TT : Unit':
-    //     { toString: () => '()',
-    //       valueOf: () => null } } ],
-    //   { fromJS: () => Unit().tt() }
-    // ).ready;
-    //
-    // let unit = Unit();
-    // console.log('unit', unit, unit.term.toString(), unit.type.toString(), unit.toString());
-    // tt = Unit().tt();
-    // console.log('tt', tt, tt.term.toString(), tt.type.toString(), tt.toString(), tt.valueOf())
-    //
-    //
-    // Bool = new R.Data(
-    //   'Bool', 'Type',
-    //   [ { 'F : Bool': { toString: () => 'F', valueOf: () => false } },
-    //     { 'T : Bool': { toString: () => 'T', valueOf: () => true } } ],
-    //   { fromJS: v => Bool()[(!!v + '')[0]]() }
-    // );
-    // // f = new R.Def("f", "f : Bool") // circular definition!
-    // lamTest = new R.Def('lamTest', '((x => x) : Bool -> Bool) F : Bool');
-    //
+    // functions, lambdas
+    id1 = new R
+      .Sig('id', '(T : Type) -> T -> T')
+      .Def('(t, x => x)');
+
+    // functions with builtins
+    id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
+      { toString () { return this[0].toString() },
+      valueOf () { return this[0].valueOf() } }
+    );
+
+
+    // types
+    Void = new R.Data('Void', 'Type', []);
+    Unit = await new R.Data(
+      'Unit', 'Type',
+      [ { 'TT : Unit':
+        { toString: () => '()',
+          valueOf: () => null } } ],
+      { fromJS: () => Unit().tt() }
+    ).ready;
+
+    let unit = Unit();
+    console.log('unit', unit, unit.term.toString(), unit.type.toString(), unit.toString());
+    tt = Unit().tt();
+    console.log('tt', tt, tt.term.toString(), tt.type.toString(), tt.toString(), tt.valueOf())
+
+
+    Bool = new R.Data(
+      'Bool', 'Type',
+      [ { 'F : Bool': { toString: () => 'F', valueOf: () => false } },
+        { 'T : Bool': { toString: () => 'T', valueOf: () => true } } ],
+      { fromJS: v => Bool()[(!!v + '')[0]]() }
+    );
+    // f = new R.Def("f", "f : Bool") // circular definition!
+    lamTest = new R.Def('lamTest', '((x => x) : Bool -> Bool) F : Bool');
+
     Nat = new R.Data(
       "Nat", 'Type',
       [ { "Z : Nat": { toString: () => 'Z', valueOf: () => 0 } },
@@ -76,134 +76,123 @@
           valueOf () { return this[0].valueOf() + 1 } } } ],
       { fromJS: v => ((z, s, p = () => v-- ? s(p()) : z) => p())(Nat().z(), x => Nat().s(x)) }
     );
-    //
-    // await R.ready;
-    // let nat2 = Nat().s(Nat().s(Nat().z()));
-    // console.log(nat2, nat2.term.print(), nat2.toString(), nat2.valueOf());
-    // let nat3 = Nat().fromJS(3);
-    // console.log(nat3.toString(), nat3.type.print())
-    //
-    // // pattern matching
-    // plus = new R
-    //   .Sig("plus", "Nat -> Nat -> Nat")
-    //   // .Def([
-    //   //   "@ Z n := n",
-    //   //   "@ (S m) n := S (plus m n)"
-    //   // ])
-    //   .Def({
-    //     "x y | x":
-    //     [ "Z   := y",
-    //       "S m := S (plus m y)" ]
-    //   });
-    //
-    // onePlusOne = new R.Sig(
-    //   "onePlusOne", "Nat" ).Def(
-    //   "plus (S Z) (S Z)"    );
 
-    plus_ = new R
+    await R.ready;
+    let nat2 = Nat().s(Nat().s(Nat().z()));
+    console.log(nat2, nat2.term.print(), nat2.toString(), nat2.valueOf());
+    let nat3 = Nat().fromJS(3);
+    console.log(nat3.toString(), nat3.type.print())
+
+    // pattern matching
+    plus = new R.Sig("plus", "Nat -> Nat -> Nat").Def({"x y | x": ["Z := y", "S m := S (plus m y)"]});
+    _plus_ = new R
       .Sig("_+_ r6", "Nat -> Nat -> Nat")
+      // .Def([
+      //   "@ Z n := n",
+      //   "@ (S m) n := S (m + n)"
+      // ])
       .Def({
         "x y | x":
         [ "Z := y",
           "S m := S (m + y)" ]
       });
-    onePlusOne_ = new R.Sig(
-      "onePlusOne'", "Nat").Def(
-      "(S Z) + (S Z)"       );
+    onePlusOne = await new R.Sig(
+      "onePlusOne", "Nat").Def(
+      "(S Z) + (S Z)"     ).ready;
+
+    console.log(`%conePlusOne =`, 'font-weight: bold; color: deeppink', onePlusOne.result.print());
+
+    List = new R.Data(
+      "List", "(A : Type) : Type",
+      [ { "Nil : List A": { toString: () => '[]', valueOf: () => [] } },
+        { "Cons : (x : A)(xs : List A) -> List A":
+          { toString () { return this[1].toString() + ' : ' + this[0].toString() },
+            valueOf () { return this[1].valueOf().concat([ this[0].valueOf() ]) } } } ],
+      { fromJS (v) { return ((n, c, p = () => v.length ? c(v.pop(), p()) : n) => p())(this.nil(), (x, y) => this.cons(this.a.fromJS(x), y)) } } );
+
+
+    let a = await plus(Nat().s(Nat().s(Nat().z()))).ready;
+    console.log(a, a.result.print())
+    let b = await a(Nat().s(Nat().z())).ready;
+    console.log(b, b.result.print())
+
+
+    listNat = List(Nat());
+    console.log(listNat);
+    theList = listNat.cons(Nat().z(), listNat.cons(Nat().s(Nat().z()), listNat.nil()));
+    console.log(theList, theList.toString(), theList.valueOf());
+    let list3 = await List(Bool()).fromJS([false, false, true, false]).ready;
+    console.log(list3.valueOf(), list3.type.print())
+
+
+    listMap = new R.Sig(
+      "listMap", "{A B : Type} -> (A -> B) -> List A -> List B" ).Def({
+      "{A} {B} f xs | xs": // {A B} ?
+      [ "Nil := Nil",
+        "Cons a as := Cons (f a) (listMap {A} {B} f as)" ] }); // TODO: allow erased terms to not be written, ie listMap f ys
+
+    allAddTwo = new R.Sig(
+      "allAddTwo", "List Nat -> List Nat"  ).Def(
+      "listMap {Nat} {Nat} (_+ (S (S Z)))" );
+
+    someList = await new R.Sig(
+      "someList", "List Nat"                             ).Def(
+      "allAddTwo (Cons (Z) (Cons (S Z) (Cons (Z) Nil)))" ).ready;
+
+    console.log(`%csomeList =`, 'font-weight: bold; color: deeppink', someList.result.print());
+
+
+
+    Vec = new R.Data(
+      "Vec", "(A : Type) : Nat -> Type",
+      [ { "Nil : Vec A Z": { toString: () => '<>', valueOf: () => [] } },
+        { "Cons : {n : Nat}(x : A)(xs : Vec A n) -> Vec A (S n)":
+          { toString () { return this[1].toString() + ' :: ' + this[0].toString() },
+            valueOf () { return this[1].valueOf().concat([this[0].valueOf()]) } } } ],
+      { fromJS (v) { return ((n, c, p = () => v.length ? c(v.pop(), p()) : n) => p())(this.nil(), (x, y) => this.cons(this.a.fromJS(x), y)) } } );
+
+    tail = new R.Sig(
+      "tail", "{A : Type}{m : Nat} -> Vec A (S m) -> Vec A m"
+    ).Def({
+      "{A} {m} v | v":
+      [ "Cons {m} y ys := ys" ]
+    });
+
+    await R.ready;
+
+    vecNat = Vec(Nat());
+    console.log(vecNat);
+    theVec = await vecNat.fromJS([2,1]).ready;
+    let tailVec = await tail(Nat(), Nat().s(Nat().z()), theVec).ready;
+    console.log(tailVec, tailVec.term.print(), '--', tailVec.result.print());
+
+
+    Fin = new R.Data(
+      "Fin", "(n : Nat) : Type",
+      [ { "Zero : {n : Nat} -> Fin (S n)":
+          { toString () { return`Zero [${this.value[0].toString()}]` },
+            valueOf () { return this[0].valueOf() - 1 } } },
+        { "Succ : {n : Nat}(i : Fin n) -> Fin (S n)":
+          {  toString () { return `Succ [${this.value[1].valueOf() - 1}] ` + this.value[1].toString() },
+             valueOf () { return this[1].valueOf() - 1 } } } ],
+      { fromJS: v => ((z, s, p = () => v-- ? s(p()) : z) => p())(Fin().zero(), x => Fin().succ(x)) } );
+
+    Sigma = new R.Data(
+      "Sigma", "(A : Type)(B : A -> Type) : Type",
+      [ { "DProd : (x : A)(y : B x) -> Sigma A B":
+          { toString () { return `Σ[${this[0].toString()}, ${this[1](this[0]).toString()}]` },
+            valueOf () { return [this[0].valueOf(), this[1](this[0]).valueOf()] } } } ],
+      { fromJS: ([v, f]) => Sigma().dprod(v, f) } );
     //
-    // console.log(`%cone_plus_one =`, 'font-weight: bold; color: deeppink', one_plus_one.result.print());
-    //
-    // List = new R.Data(
-    //   "List", "(A : Type) : Type",
-    //   [ { "Nil : List A": { toString: () => '[]', valueOf: () => [] } },
-    //     { "Cons : (x : A)(xs : List A) -> List A":
-    //       { toString () { return this[1].toString() + ' : ' + this[0].toString() },
-    //         valueOf () { return this[1].valueOf().concat([ this[0].valueOf() ]) } } } ],
-    //   { fromJS (v) { return ((n, c, p = () => v.length ? c(v.pop(), p()) : n) => p())(this.nil(), (x, y) => this.cons(this.a.fromJS(x), y)) } } );
-    //
-    //
-    // let a = await plus(Nat().s(Nat().s(Nat().z()))).ready;
-    // console.log(a, a.result.print())
-    // let b = await a(Nat().s(Nat().z())).ready;
-    // console.log(b, b.result.print())
-    //
-    //
-    // listNat = List(Nat());
-    // console.log(listNat);
-    // theList = listNat.cons(Nat().z(), listNat.cons(Nat().s(Nat().z()), listNat.nil()));
-    // console.log(theList, theList.toString(), theList.valueOf());
-    // let list3 = await List(Bool()).fromJS([false, false, true, false]).ready;
-    // console.log(list3.valueOf(), list3.type.print())
-    //
-    //
-    // listMap = new R.Sig(
-    //   "listMap", "{A B : Type} -> (A -> B) -> List A -> List B" ).Def({
-    //   "{A} {B} f xs | xs": // {A B} ?
-    //   [ "Nil := Nil",
-    //     "Cons a as := Cons (f a) (listMap {A} {B} f as)" ] }); // TODO: allow erased terms to not be written, ie listMap f ys
-    //
-    // allAddTwo = new R.Sig(
-    //   "allAddTwo", "List Nat -> List Nat"    ).Def(
-    //   "listMap {Nat} {Nat} (plus (S (S Z)))" );
-    //
-    // someList = await new R.Sig(
-    //   "someList", "List Nat"                             ).Def(
-    //   "allAddTwo (Cons (Z) (Cons (S Z) (Cons (Z) Nil)))" ).ready;
-    //
-    // console.log(`%csomeList =`, 'font-weight: bold; color: deeppink', someList.result.print());
-    //
-    //
-    //
-    // Vec = new R.Data(
-    //   "Vec", "(A : Type) : Nat -> Type",
-    //   [ { "Nil : Vec A Z": { toString: () => '<>', valueOf: () => [] } },
-    //     { "Cons : {n : Nat}(x : A)(xs : Vec A n) -> Vec A (S n)":
-    //       { toString () { return this[1].toString() + ' :: ' + this[0].toString() },
-    //         valueOf () { return this[1].valueOf().concat([this[0].valueOf()]) } } } ],
-    //   { fromJS (v) { return ((n, c, p = () => v.length ? c(v.pop(), p()) : n) => p())(this.nil(), (x, y) => this.cons(this.a.fromJS(x), y)) } } );
-    //
-    // tail = new R.Sig(
-    //   "tail", "{A : Type}{m : Nat} -> Vec A (S m) -> Vec A m"
+    // half = new R.Sig(
+    //   "half", "Nat -> Nat"
     // ).Def({
-    //   "{A} {m} v | v":
-    //   [ "Cons {m} y ys := ys" ]
-    // });
+    //   "x | x":
+    //   [ "Z       := Z",
+    //     "S  Z    := Z",
+    //     "S (S m) := S (half m)" ]
+    // })
     //
-    // await R.ready;
-    //
-    // vecNat = Vec(Nat());
-    // console.log(vecNat);
-    // theVec = await vecNat.fromJS([2,1]).ready;
-    // let tailVec = await tail(Nat(), Nat().s(Nat().z()), theVec).ready;
-    // console.log(tailVec, tailVec.term.print(), '--', tailVec.result.print());
-    //
-    //
-    // Fin = new R.Data(
-    //   "Fin", "(n : Nat) : Type",
-    //   [ { "Zero : {n : Nat} -> Fin (S n)":
-    //       { toString () { return`Zero [${this.value[0].toString()}]` },
-    //         valueOf () { return this[0].valueOf() - 1 } } },
-    //     { "Succ : {n : Nat}(i : Fin n) -> Fin (S n)":
-    //       {  toString () { return `Succ [${this.value[1].valueOf() - 1}] ` + this.value[1].toString() },
-    //          valueOf () { return this[1].valueOf() - 1 } } } ],
-    //   { fromJS: v => ((z, s, p = () => v-- ? s(p()) : z) => p())(Fin().zero(), x => Fin().succ(x)) } );
-    //
-    // Sigma = new R.Data(
-    //   "Sigma", "(A : Type)(B : A -> Type) : Type",
-    //   [ { "DProd : (x : A)(y : B x) -> Sigma A B":
-    //       { toString () { return `Σ[${this[0].toString()}, ${this[1](this[0]).toString()}]` },
-    //         valueOf () { return [this[0].valueOf(), this[1](this[0]).valueOf()] } } } ],
-    //   { fromJS: ([v, f]) => Sigma().dprod(v, f) } );
-    // //
-    // // half = new R.Sig(
-    // //   "half", "Nat -> Nat"
-    // // ).Def({
-    // //   "x | x":
-    // //   [ "Z       := Z",
-    // //     "S  Z    := Z",
-    // //     "S (S m) := S (half m)" ]
-    // // })
-    // //
     // proof example
     Id = new R.Data(
       "Id'", "{A : Type}(x : A) : A -> Type",
@@ -213,18 +202,18 @@
       .Sig("cong", "{a b : Type}{x y : a} -> (f : a -> b) -> Id' x y -> Id' (f x) (f y)")
       .Def("@ f Refl := Refl")
 
-    // Leq = new R.Data( // _<=_ , Z <= n
-    //   "Leq'", "Nat -> Nat -> Type",
-    //   [ "LZ : {n : Nat} -> Leq' (Z) n", // TODO: all right identifiers parse as arguments, including tnames and dnames
-    //     "LS : {m n : Nat} (p : Leq' m n) -> Leq' (S m) (S n)" ]
-    // );
-    // let two_lt_one = new R.Sig(
-    //   "two_lt_one", "Leq' (S (S Z)) (S Z)" ).Def(
-    //   "LS (LS LZ)" );
-    // // antisym = new R.Sig(
-    // //   "antisym", "(m n : Nat) -> Leq' m n -> Leq' n m -> Id' Nat m n" ).Def([
-    // //     "@ .Z .Z (LZ .Z) (LZ .Z) := Refl",
-    // //     "@ .(S k) .(S l) (LS {k}{l} x) (LS .{l}.{k} y) := cong S (antisym k l x y)" ])
+    Leq = new R.Data( // _<=_ , Z <= n
+      "Leq'", "Nat -> Nat -> Type",
+      [ "LZ : {n : Nat} -> Leq' (Z) n", // TODO: all right identifiers parse as arguments, including tnames and dnames
+        "LS : {m n : Nat} (p : Leq' m n) -> Leq' (S m) (S n)" ]
+    );
+    let two_lt_one = new R.Sig(
+      "two_lt_one", "Leq' (S (S Z)) (S Z)" ).Def(
+      "LS (LS LZ)" );
+    // antisym = new R.Sig(
+    //   "antisym", "(m n : Nat) -> Leq' m n -> Leq' n m -> Id' Nat m n" ).Def([
+    //     "@ .Z .Z (LZ .Z) (LZ .Z) := Refl",
+    //     "@ .(S k) .(S l) (LS {k}{l} x) (LS .{l}.{k} y) := cong S (antisym k l x y)" ])
   })().catch(console.log)
 
   </script>
