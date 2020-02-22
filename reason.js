@@ -10,6 +10,7 @@ var Reason = (options = {}) => {
           else return (...args) => { throw new Error((({
             // Interpreter errors
             duplicate: n => `Interpreter error: ${n} already exists`,
+            mixfix_overlap: (tested, given) => `Interpreter error: ${tested} overlaps syntax with ${given}`,
             nosig: n => `Interpreter error: no signature has been declared for ${n}`,
             notfound: n => `Interpreter error: declaration for ${n} cannot be found`,
             unchecked: () => 'Interpreter error: not yet typechecked',
@@ -31,8 +32,10 @@ var Reason = (options = {}) => {
             parser_mismatch: (token, index, id, match) => `Parser error: mismatch at '${token.id || ''}'${
               'value' in token ? `, '${token.value}'` : ''}, token #${index}${id ? `: expected '${id}'` : ''}${match ? `, '${match}'` : ''}`,
             parser_nesting: () => 'Parser error: parens nest level too deep',
-            parser_notid: () => 'Parser error: not an identifier',
+            parser_notid: (token, index) => `Parser error: ${token} not an identifier at position ${index}`,
             parser_notvalid: which => `Parser error: not a valid ${which}`,
+            parser_mixfix_miss_id: (which, unapp) => `Parser error: missing identifiers ${unapp} of mixfix operator ${which}`,
+            parser_mixfix_bad: (which, mf) => `Parser error: unexpected identifier ${which} in mixfix ${mf}`,
 
             // Pretty printer errors
             print_value: quoted => `Print error: warning - tried to print a Value (quoted: ${quoted})`,
@@ -105,11 +108,14 @@ var Reason = (options = {}) => {
           pure: v => new Alt(r => r(v)),
           throw: e => new Alt((_, l) => l(e))
         }),
-        log = (...args) => showDebug ? 0 : console.log(...[].concat(...args.map(e => ['\n  - ', e])).slice(1)); // TODO expand logging
+        log = (...args) => console.log(...[].concat(...args.map(e => ['\n  - ', e])).slice(1)); // TODO expand logging
 
   let active = [];
   function wait (declType, name) {
-    if (~active.findIndex(([d, n]) => d === declType && n === name)) error.duplicate(name);
+    let match;
+    if (~active.findIndex(([d, n]) => d === declType && n === name )) error.duplicate(name);
+    else if ((~(match = findMixfix(name, active.map(x => x[1])))[1] && active[match[0]][0] === declType) ||
+      (match = active.find(x => ~findMixfix(name, [x[1]])[1] && x[0] === declType))) error.mixfix_overlap(name, active[match[0]][1]);
     else active.push([declType, name])
   }
   function unwait (declType, name) {
@@ -126,23 +132,23 @@ var Reason = (options = {}) => {
   // Interpreter
 
   class Data {
-    constructor (name, ddef, cdefs, builtins = {}) {
-      let getName = str => (str.match(/^\s*([A-Z][a-zA-Z0-9_]*[\']*)/) || error.bad_id_name('definition', str))[1];
-      wait('data', getName(name));
-      let readyDecl = false, ctorNames = cdefs.map(cdef => {
-            return typeof cdef === 'string' ?
-              [getName(cdef), {}] :
-              Object.entries(cdef)[0].map((x, i) => i ? x : getName(x))
-          }),
+    constructor (nameString, ddef, cdefs, builtins = {}) {
+      let nameFix = str => str.match(/^([a-zA-Z][a-zA-Z0-9]*[\']*)|(\((_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(\s+((?:l|r)[\d]{1,3}))?\))/).filter((_, i) => i % 2);
+      let [name, fixity] = nameFix(nameString).filter(Boolean);
+      name = name || fixName;
+      wait('data', name);
+      let readyDecl = false, ctorNames = cdefs.map(cdef => typeof cdef === 'string' ? [cdef, nameFix(cdef).filter(Boolean)[1], {}] :
+            Object.entries(cdef)[0].flatMap((x, i) => i ? x : [x, nameFix(x).filter(Boolean)[1]])),
           { fromJS, ...dBuiltins } = builtins, fromJSThis = {}, root,
-          jsTerm = ctorNames.reduce((a, x) => Object.assign(a, { [x[0].toLowerCase()]: () => error.unchecked() }), { appliedTerms: [], ...dBuiltins });
+          jsTerm = ctorNames.reduce((a, x) => Object.assign(a, { [x[0].match(/\w+/) ? x[0].toLowerCase() : x[0]]: () => error.unchecked() }),
+            { appliedTerms: [], ...dBuiltins });
       // Data(name, tcon, [dcons], {...builtins})
       // Data(name, tcon, [{dcons}], {...builtins})
       sequence(() => cdefs.reduce(
-        (p, cdef) => p.then(acc => tokenise({sourceString: (typeof cdef === 'string') ? cdef : Object.keys(cdef)[0]})
-          .then(lex => parse(lex, 'cdef'))
+        (p, cdef, i) => p.then(acc => tokenise({sourceString: ctorNames[i][0]})
+          .then(lex => parse(lex, 'cdef', {fixity: ctorNames[i][1]}))
           .then(res => (acc[0][2].push(res[0]), acc))),
-        tokenise({name, sourceString: ddef}).then(lex => parse(lex, 'ddef')))
+        tokenise({name, sourceString: ddef}).then(lex => parse(lex, 'ddef', {fixity})))
         .then(decls => typecheck(decls, context))
         .then(res => {
           let [{declName, term, type, params, ctors}] = res;
@@ -158,14 +164,13 @@ var Reason = (options = {}) => {
         if (readyDecl) {
           let { term, type, params } = root, jsTyTerm = { appliedTerms: typeArgs, type };
           if (term) Object.assign(jsTyTerm, { term, print: print(term) });
-          ctorNames.forEach(([ctorName, cBuiltins]) => {
+          ctorNames.forEach(([ctorName, _, cBuiltins]) => {
             let lcname = ctorName.toLowerCase(), ctor;
             jsTyTerm[lcname] = fromJSThis[lcname] = ctor = Object.assign((...termArgs) => {
               // Initialise a term of the given type
               // check if indexed type -> appliedTerm for each param -> if not, throw error
               let term = new Term({dcon: [ new Name({global: [ctorName]}), termArgs.map(tm =>
-                    new Arg({arg: [tm.term, false]}))
-                  ]}),
+                    new Arg({arg: [tm.term, false]})) ]}),
                   type = context.lookup(term[0], 'ctor')[0].cdef.items[0][1].quote(),
                   fresh = parser.fresh(), jsCtTerm = { term, type, appliedTerms: [], print: print(term), result: quote(evaluate(term, context)) };
               if (termArgs.length) {
@@ -218,14 +223,14 @@ var Reason = (options = {}) => {
   }
 
   class Sig {
-    constructor (name, declString) {
+    constructor (nameString, declString) {
+      // Sig(name || "name fixity", signature || sigdef)
+      let [name, fixity] = nameString.match(/^(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(\s+((?:l|r)[\d]{1,3}))?$/).filter((_, i) => i % 2);
       wait('sig', name);
       let ready = false, jsTerm = {}, jsSig = { Def: (...args) => jsTerm = Object.assign(new Def(name, ...args), jsTerm) };
       Object.defineProperty(jsSig, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsSig) } });
-      // Sig(name, signature)
-      // Sig(name, sigdef)
       sequence(() => tokenise({name, sourceString: declString})
-        .then(lex => parse(lex, 'sig'))
+        .then(lex => parse(lex, 'sig', {fixity}))
         .then(decls => typecheck(decls, context))
         .then(res => {
           let [{declName, term, type}] = res;
@@ -238,7 +243,8 @@ var Reason = (options = {}) => {
   }
 
   class Def { // TODO: pull builtins from Data definitions somehow
-    constructor (name, declStrings, builtins = {}) {
+    constructor (nameString, declStrings, builtins = {}) {
+      let [name, fixity] = nameString.match(/^(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(\s+((?:l|r)[\d]{1,3}))?$/).filter((_, i) => i % 2);
       wait('def', name);
       let ready = false, { toString, ...tBuiltins } = builtins, jsTerm = { ...tBuiltins, appliedTerms: [] };
       if (typeof declStrings === 'string') {
@@ -326,8 +332,17 @@ var Reason = (options = {}) => {
 
   // Lexer
 
+  function findMixfix (id, list) {
+    let lex = lexMixfix(id), lexop, index = -1;
+    return [ list.findIndex(op => ~(index = (lexop = lexMixfix(op)).findIndex((_, i) => lex.every((token, j) => token === lexop[i + j])))), index ]
+  }
+  function lexMixfix (str) {
+    let result = str.match(/^(_)?([^_]+)?(.*)/);
+    return result.slice(1, 3).filter(Boolean).concat(result[3] ? lexMixfix(result[3]) : [])
+  }
+
   function tokenise ({name, sourceString}) {
-    let rx_token = /^((\s+)|([a-zA-Z][a-zA-Z0-9_]*[\']*|_)|([:!$%&*+.,/<=>\?@\\^|\-~\[\]]{1,5})|(0|-?[1-9][0-9]*)|([(){}"]))(.*)$/,
+    let rx_token = /^((\s+)|([a-zA-Z][a-zA-Z0-9]*[\']*|_)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)|(0|-?[1-9][0-9]*)|([(){}"]))(.*)$/,
         rx_digits = /^([0-9]+)(.*)$/,
         rx_hexs = /^([0-9a-fA-F]+)(.*)$/,
         source = sourceString, tokens = name ? [{id: name, value: 'name'}] : [], index = 0, word, char;
@@ -551,8 +566,7 @@ var Reason = (options = {}) => {
     }
   }
   class Ctor extends AST('ctor') {
-    toString () { return `CTOR: ${this[0].toString()}${
-      this[1].items.length - 1 ? ' ' + this[1].tail().toString() : ''} : ${this[1].items.slice(-1)[0].toString()} : ${this[1].items.slice(-1)[0].toString()}` }
+    toString () { return `CTOR: ${this[0].toString()}${this[1].items.length - 1 ? ' ' + this[1].tail().toString() : ''} : ${this[1].items.slice(-1)[0].toString()}` }
   }
 
   class Value extends AST('vlam', 'vstar', 'vpi', 'vfree', 'vtcon', 'vdcon', 'vapp', 'vcase') {
@@ -592,9 +606,12 @@ var Reason = (options = {}) => {
   let parser = new (class Parser {
     tnames = []
     dnames = []
+    mixfixes = []
     fresh = (i => () => i++)(0)
     parse (tokens, sourceName, parseOptions = {}) {
-      // TODO: mixfix operators
+      // log('@' + sourceName);
+      // log('tokens', ...tokens);
+      // log('fixity', parseOptions.fixity)
 
       function debug (msg, res) {
         if (!showDebug) return;
@@ -623,7 +640,8 @@ var Reason = (options = {}) => {
         error.parser_mismatch(token, index, match.id, match.value);
         token = next();
       }
-      function assertId () { if (!('id' in token) || 'value' in token) error.parser_mismatch(token, index) }
+      function assertId () { if (!('id' in token) || 'value' in token) error.parser_notid(token, index) }
+      function assertOp () { if (!('id' in token) || ('value' in token && token.value !== 'op')) error.parser_mismatch(token, index) }
 
       function alt (fn) { // TODO: move the environment state into alt
         let rewind = index;
@@ -633,10 +651,11 @@ var Reason = (options = {}) => {
         })
       }
       function altNames (fn) {
-        let rewind = index, tnames = [], dnames = [];
-        return new Promise(r => r(fn.bind({tnames, dnames})())).then(res => {
-          parser.tnames = parser.tnames.concat(tnames);
-          parser.dnames = parser.dnames.concat(dnames.filter(c => !~parser.dnames.indexOf(c)));
+        let rewind = index, arg;
+        return new Promise(r => r(fn(arg = {tnames: [], dnames: [], mixfixes: []}))).then(res => {
+          parser.tnames = parser.tnames.concat(arg.tnames);
+          parser.dnames = parser.dnames.concat(arg.dnames.filter(c => !~parser.dnames.indexOf(c)));
+          parser.mixfixes = parser.mixfixes.concat(arg.mixfixes.filter(c => !~parser.mixfixes.findIndex(n => n[0] === c[0])));
           return res
         }).catch(err => {
           index = rewind;
@@ -665,59 +684,65 @@ var Reason = (options = {}) => {
         }
         return endTest([]).catch(() => {
           switch (sourceName) {
-            case 'sig': return alt(() => {
+            case 'sig': return altNames(arg => {
               // term
               advance('Signature?', {value: 'name'});
-              let name = token;
+              let name = token.id;
+              if (name.match(/_/)) arg.mixfixes.push([name, parseOptions.fixity]);
               return parseTerm([], 'pi')
-                .then(result => endTest([new Decl({sig: [ new Name({global: [name.id]}), result ]})]))
+                .then(result => endTest([new Decl({sig: [ new Name({global: [name]}), result ]})]))
                 .catch(() => error.parser_notvalid('signature'))
             })
 
-            case 'def': return alt(() => {
+            case 'def': return altNames(arg => {
               // term : type
               advance('Signature with definition?', {value: 'name'});
-              let name = token;
+              let name = token.id;
+              if (name.match(/_/)) arg.mixfixes.push([name, parseOptions.fixity]);
               return parseTerm([], 'ann')
                 .then(result => {
                   if (result.ctor !== 'ann') throw 'skip';
-                  return endTest([ new Decl({sig: [ new Name({global: [name.id]}), result[1] ]}),
-                    new Decl({def: [ new Name({global: [name.id]}), result[0] ]})])
+                  return endTest([ new Decl({sig: [ new Name({global: [name]}), result[1] ]}),
+                    new Decl({def: [ new Name({global: [name]}), result[0] ]})])
                 })
-            }).catch(() => alt(() => {
+            }).catch(() => altNames(arg => {
               // term
               advance('Definition?', {value: 'name'})
-              let name = token;
+              let name = token.id;
+              if (name.match(/_/)) arg.mixfixes.push([name, parseOptions.fixity]);
               return parseTerm([], 'pi')
-                .then(result => endTest([new Decl({def: [ new Name({global: [name.id]}), result ]})]))
+                .then(result => endTest([new Decl({def: [ new Name({global: [name]}), result ]})]))
             })).catch(() => error.parser_notvalid('definition'))
 
-            case 'ddef': return altNames(function () {
+            case 'ddef': return altNames(arg => {
               // name bindings : type
               advance('Type/record definition?', {value: 'name'});
-              let name = token;
-              this.tnames.push(name.id);
+              let name = token.id;
+              if (name.match(/_/)) arg.mixfixes.push([name, parseOptions.fixity]);
+              arg.tnames.push(name);
               return dataDef([], 'ddef')
-                .then(result => endTest([new Decl({data: [ new Name({global: [name.id]}), result, [] ] })]))
+                .then(result => endTest([new Decl({data: [ new Name({global: [name]}), result, [] ] })]))
                 .catch(() => error.parser_notvalid('type definition'))
             })
 
-            case 'cdef': return altNames(function () {
+            case 'cdef': return altNames(arg => {
               // name : bindings type (?)
               advance('Constructor definition?');
               assertId();
-              let name = token;
-              this.dnames.push(name.id);
+              let name = token.id;
+              if (name.match(/_/)) arg.mixfixes.push([name, parseOptions.fixity]);
+              arg.dnames.push(name);
               advance('Type constructor separator?', {value: 'op', id: ':'});
               return dataDef([], 'cdef')
-                .then(result => endTest([new Ctor({ctor: [ new Name({global: [name.id]}), result ]})]))
+                .then(result => endTest([new Ctor({ctor: [ new Name({global: [name]}), result ]})]))
                 .catch(() => error.parser_notvalid('constructor definition'))
             })
 
-            case 'case': return alt(() => {
+            case 'case': return altNames(arg => {
               // args | term
               advance('Case statement?');
               let name = token.id;
+              if (name.match(/_/)) arg.mixfixes.push([name, parseOptions.fixity]);
               return caseOf([])
                 .then(([bvs, fn]) => endTest([bvs, x => new Decl({def: [ new Name({global: [name]}), fn(x) ]})]))
                 .catch(() => error.parser_notvalid('case statement'))
@@ -772,14 +797,15 @@ var Reason = (options = {}) => {
       }
 
       function bindings (env, isPi) { // returns { boundvars, types, epsilons }
-        function bindvars () { // If a lone binding is in context, it's a value. Otherwise, it's a type.
+        // TODO: enforce left erasure
+        function bindvars () {
           // '{a} b c'
           advance('Binding variable?');
           assertId();
           let bvs = [[token, false]]
           return (function loop () { return alt(() => {
             advance('Binding next variable?');
-            if (!('id' in token) || 'value' in token) error.parser_notid();
+            assertId();
             bvs.unshift([token, false]);
             return loop()
           }).catch(() => {
@@ -813,7 +839,7 @@ var Reason = (options = {}) => {
         })
       }
 
-      function parseTerm (env, clause) {
+      function parseTerm (env, clause) { // TODO: split into separate functions
         function arrow (env, term) {
           advance('Function arrow?', {value: 'op', id: '->'});
           return parseTerm([''].concat(env), 'pi')
@@ -851,11 +877,13 @@ var Reason = (options = {}) => {
           // f a b... : term
           case 'ann': return altMsg('Try Annotation', () => parseTerm(env, 'ctor'))
             .catch(() => alt(() => parseTerm(env, 'app'))).then(annot)
+            // (a * b) : term
+            .catch(() => enclosure(['parens'], () => mixfix(env)).then(annot))
             // (lam) : term
             .catch(() => enclosure(['parens'], () => lambda(env)).then(annot))
 
-          // c a b...
-          case 'ctor': return altMsg('Try Constructor', () => {
+          // c a b... *or* t a b...
+          case 'ctor': return altMsg('Try Constructor', () => { // TODO: x _c_ y *or* x _t_ y
             advance('Constructor term?');
             assertId();
             let ts = [], eps = [], name = token.id, ctor;
@@ -876,9 +904,13 @@ var Reason = (options = {}) => {
             ]}))
           })
 
-          // f a b...
           case 'app': return enclosure(['parens'], () => lambda(env))
+            // *_ x...
+            .catch(() => alt(() => mixfix(env)))
+            // f a b...
             .catch(() => parseTerm(env, 'var'))
+            // x _*_ y...
+            .then(tm => alt(() => mixfix(env, tm)).catch(() => tm))
             .then(tm => altMsg('Try apply', () => {
               let ts = [], eps = [];
               debug('Application?');
@@ -890,13 +922,13 @@ var Reason = (options = {}) => {
                   return loop()
                 })
               })().catch(() => ts.reduce((acc, term, i) => acc = new Term({app: [acc, term, eps[i]]}), tm))
-            }).catch(() => tm))
+            })) // .catch(() => tm))
 
-          // Type
           case 'var': return alt(() => {
+            // Type
             advance('Star?', {id: 'Type'});
             return new Term({star: []})
-          }) // data constructor
+          }) // c... *or* t...
             .catch(() => alt(() => parseTerm(env, 'ctor')))
              // a *or* [x=>][(x:X)->] x
             .catch(() => alt(() => {
@@ -904,7 +936,9 @@ var Reason = (options = {}) => {
               assertId();
               let i = env.findIndex(bv => bv.id === token.id);
               return ~i ? new Term({boundvar: [i]}) : new Term({freevar: [ new Name({global: [token.id]}) ]})
-            })) // (pi)
+            })) // x _*...
+            .then(tm => mixfix(env, tm).catch(() => tm))
+             // (pi)
             .catch(() => enclosure(['parens'], () => parseTerm(env, 'pi')))
         }
       }
@@ -920,9 +954,9 @@ var Reason = (options = {}) => {
               bvs.unshift(bv);
               eps.unshift(ep);
               advance('Lambda comma?', {value: 'op', id: ','});
-              // x, {y}, ...
+              // x , {y} , ...
               return enclosure(['braces'], nextVar(true))
-              // x, y, ...
+              // x , y , ...
                 .catch(() => alt(nextVar(false)))
                 .then(({bv, ep}) => loop(bv, ep))
             }).catch(err => { if (!err.message) error.parser_mismatch(token, index) });
@@ -933,7 +967,7 @@ var Reason = (options = {}) => {
           .then(({bv, ep}) => loop(bv, ep))
           .then(() => {
             advance('Lambda arrow?', {value: 'op', id: '=>'});
-            // x, y, .. => term
+            // x , y , .. => term
             return parseTerm(bvs.concat(env), 'bind')
               .then(tm => bvs.reduce((a, _, i) => a = new Term({lam: [a, eps[i]]}), tm))
           })
@@ -1016,6 +1050,49 @@ var Reason = (options = {}) => {
         })
       }
 
+      function mixfix (env, mbTerm, pos = 0) { // TODO: mixfix erasure {A} x = x
+        return altMsg('Try Mixfix Expression', () => {// x a_b...[...] *or* _a_b...[...]
+          advance(`Mixfix operator in ${!!mbTerm ? 'second' : 'first' } position?`);
+          assertOp();
+          let ts = [], name = token.id, [mi, pi] = findMixfix(name, parser.mixfixes.map(x => x[0]));
+          if (!~pi) {
+            if (!mbTerm) return parseTerm(env, 'app').then(tm => mixfix(env, tm));
+            throw new Error('');
+          }
+          let [mfName, fixity] = parser.mixfixes[mi],
+              lexAp = lexMixfix(name), lexOp = lexMixfix(mfName), skipArgs = lexAp.filter(x => x === '_').length;
+          if (mbTerm) {
+            if (lexAp[0] === '_') throw new Error('');
+            ts.push(mbTerm)
+          }
+          if (pi > 1) error.parser_mixfix_miss_id(mfName, lexOp.slice(!!mbTerm, pi).join(''));
+          lexOp.splice(0, lexAp.length + pi);
+          ts = ts.concat(Array(skipArgs).fill(false));
+          return (function loop () {
+            if (!lexOp.length) return;
+            return alt(() => parseTerm(env, 'app').then(tm => { // will this infinite loop?
+              // x a_..._b y c...[...]
+              advance('Next mixfix operator?');
+              assertOp();
+              name = token.id;
+              lexOp.shift(); // the '_' for the current term
+              lexAp = lexMixfix(name);
+              if (lexAp.some((token, i) => token !== lexOp[i])) error.parser_mixfix_bad(name, mfName);
+              skipArgs = lexAp.filter(x => x === '_');
+              (ts = ts.concat(Array(skipArgs).fill(false))).push(tm);
+              lexOp.splice(0, lexAp.length);
+              return loop()
+            }))
+          })()
+            .catch(err => {
+              if (!err.message) error.parser_mismatch(token, index);
+              let falses = ts.filter(x => !x), holes = falses.length, lamTm = ts.reduce((a, t, i) =>
+                new Term({app: [ a, t || new Term({boundvar: [--holes + env.length]}), false ]}), new Term({freevar: [ new Name({global: [mfName]}) ]}));
+              return falses.reduce(a => new Term({lam: [a, false]}), lamTm)
+            })
+        })
+      }
+
       let token = tokens[0], index = 0, level = 0;
       return parseStatement([], [])
         .then(result => (debug('Expression:', result), result))
@@ -1065,7 +1142,7 @@ var Reason = (options = {}) => {
         }
       } else if (testObj(Name)) {
         switch (obj.ctor) {
-          case 'global': return typeof obj[0] === 'number' ? '_' + obj[0] : obj[0]
+          case 'global': return typeof obj[0] === 'number' ? '_' + obj[0] : parensIf(~parser.mixfixes.findIndex(x => x[0] === obj[0]), obj[0])
           case 'local': return typeof obj[0] === 'number' ? vars(obj[0]) : obj[0]
         }
       } else if (testObj(Pat)) {
@@ -1151,7 +1228,7 @@ var Reason = (options = {}) => {
       case 'freevar': return (mbVal = ctx.lookup(term[0], 'def')) ? mbVal : new Value({vfree: [term[0]]})
       case 'tcon': return new Value({vtcon: [ term[0], term[1].map(tm => evaluate(tm, ctx)) ]})
       case 'dcon': return new Value({vdcon: [ term[0], term[1]
-        .map(arg => new Arg({arg: [ evaluate(arg[0], ctx), arg[1] ]})) ].concat([term[2]].filter(x => x))})
+        .map(arg => new Arg({arg: [ evaluate(arg[0], ctx), arg[1] ]})) ].concat([term[2]].filter(Boolean))})
 
       case 'case': switch ((vscrut = evaluate(term[0], ctx)).ctor) {
         case 'vfree': return new Value({vcase: [ vscrut, term[1] ]});
@@ -1188,7 +1265,7 @@ var Reason = (options = {}) => {
       case 'vfree': return (name = value[0]).ctor === 'quote' ? new Term({boundvar: [index - name[0] - 1]}) : new Term({freevar: [name]})
       case 'vtcon': return new Term({tcon: [ value[0], value[1].map(v => quote(v, index)) ]})
       case 'vdcon': return new Term({dcon: [ value[0], value[1]
-        .map(arg => new Arg({arg: [ quote(arg[0], index), arg[1] ]})) ].concat([value[2]].filter(x => x))})
+        .map(arg => new Arg({arg: [ quote(arg[0], index), arg[1] ]})) ].concat([value[2]].filter(Boolean))})
       case 'vapp': return new Term({app: [ quote(value[0], index), quote(value[1], index), value[2] ]})
       case 'vcase': return new Term({case: [ quote(value[0]), value[1] ]})
     }
@@ -1242,10 +1319,11 @@ var Reason = (options = {}) => {
           result = ctx.lookup(term[0], 'data');
           if (result.ddef === null) error.tc_term_not_found(term[0][0]);
           result = result.ddef;
-          if (result.items.length - 1 > term[1].length) error.tc_dcon_arg_len(term[1].length, result.items.length - 1);
-          else if (result.items.length - 1 < term[1].length)
-            return infer({ctx, term: args.term = term[1].slice(result.items.length - 1).reduce((acc, tm) => new Term({app: [acc, tm, false]}),
-              new Term({tcon: [term[0], term[1].slice(0, result.items.length - 1)]})), index});
+          let runtimeItems = result.items.filter(x => x.ctor === 'term');
+          if (runtimeItems.length - 1 > term[1].length) error.tc_dcon_arg_len(term[1].length, runtimeItems.length - 1);
+          else if (runtimeItems.length - 1 < term[1].length)
+            return infer({ctx, term: args.term = term[1].slice(runtimeItems.length - 1).reduce((acc, tm) => new Term({app: [acc, tm, false]}),
+              new Term({tcon: [term[0], term[1].slice(0, runtimeItems.length - 1)]})), index});
           return tcArgTele(ctx, term[1].map(x => new Arg({arg: [x, false]})), result.items.slice(0, -1)).then(() => result.items.slice(-1)[0][1])
 
           case 'dcon':
@@ -1258,7 +1336,7 @@ var Reason = (options = {}) => {
           if (match.cdef.length - 1 > term[1].length) error.tc_dcon_arg_len(term[1].length, match.cdef.length - 1);
           else if (match.cdef.length - 1 < term[1].length)
             return infer({ctx, term: args.term = term[1].slice(match.cdef.length - 1).reduce((acc, tm) => new Term({app: [acc, ...tm]}),
-              new Term({dcon: [term[0], term[1].slice(0, match.cdef.length - 1)].concat([term[2]].filter(x => x))})), index});
+              new Term({dcon: [term[0], term[1].slice(0, match.cdef.length - 1)].concat([term[2]].filter(Boolean))})), index});
           return tcArgTele(ctx, term[1], match.cdef.items.slice(0, -1)).then(() => evaluate(new Term({tcon: [ match.tname, [] ]}), ctx))
 
           case 'lam': error.tc_cannot_infer('lambda')
@@ -1294,7 +1372,7 @@ var Reason = (options = {}) => {
           if (match.cdef.length - 1 > term[1].filter(x => !x[1]).length) error.tc_dcon_arg_len(term[1].length, match.cdef.length - 1); // BUG: erased/runtime
           if (match.cdef.length - 1 < term[1].filter(x => !x[1]).length)
             return check(ctx, term[1].slice(match.cdef.length - 1).reduce((acc, tm) => new Term({app: [acc, ...tm]}),
-              new Term({dcon: [term[0], term[1].slice(0, match.cdef.length - 1)].concat([term[2]].filter(x => x))})), typeVal, index);
+              new Term({dcon: [term[0], term[1].slice(0, match.cdef.length - 1)].concat([term[2]].filter(Boolean))})), typeVal, index);
           let items = substTele(ctx, match.ddef.tail(), itemsi, match.cdef);
           return tcArgTele(ctx, term[1], items.slice(0, -1)).then(args => ({ term: new Term({dcon: [ term[0], args, typeVal ]}), type: typeVal }))
 
@@ -1334,9 +1412,9 @@ var Reason = (options = {}) => {
         case 'boundvar': return index !== term2[0] ? term2 : !ep ? term1 : error.tc_erased_var_subst()
         case 'tcon': return new Term({tcon: [ term2[0], term2[1].map(tm => subst(term1, tm, ep, index)) ]})
         case 'dcon': return new Term({dcon: [ term2[0],
-          term2[1].map(arg => new Arg({arg: [ subst(term1, arg[0], ep, index), arg[1]]})) ].concat([term2[2]].filter(x => x))})
+          term2[1].map(arg => new Arg({arg: [ subst(term1, arg[0], ep, index), arg[1]]})) ].concat([term2[2]].filter(Boolean))})
         case 'case': return new Term({case: [ subst(term1, term2[0], ep, index),
-          term2[1].map(match => new Match({clause: [ substPat(term1, match[0], ep, index), subst(term1, match[1], ep, index) ]})) ].concat([term2[2]].filter(x => x))})
+          term2[1].map(match => new Match({clause: [ substPat(term1, match[0], ep, index), subst(term1, match[1], ep, index) ]})) ].concat([term2[2]].filter(Boolean))})
         case 'star': case 'freevar': return term2
       }
     }
@@ -1356,9 +1434,9 @@ var Reason = (options = {}) => {
         case 'freevar': return term2[0].ctor === 'local' && index === term2[0][0] ? term1 : term2
         case 'tcon': return new Term({tcon: [ term2[0], term2[1].map(tm => unsubst(term1, tm, index)) ]})
         case 'dcon': return new Term({dcon: [ term2[0],
-          term2[1].map(arg => new Arg({arg: [ unsubst(term1, arg[0], index), arg[1]]})) ].concat([term2[2]].filter(x => x))})
+          term2[1].map(arg => new Arg({arg: [ unsubst(term1, arg[0], index), arg[1]]})) ].concat([term2[2]].filter(Boolean))})
         case 'case': return new Term({case: [ unsubst(term1, term2[0], index),
-          term2[1].map(match => new Match({clause: [ unsubstPat(term1, match[0], index), unsubst(term1, match[1], index) ]})) ].concat([term2[2]].filter(x => x))})
+          term2[1].map(match => new Match({clause: [ unsubstPat(term1, match[0], index), unsubst(term1, match[1], index) ]})) ].concat([term2[2]].filter(Boolean))})
         case 'star': case 'boundvar': return term2
       }
     }
@@ -1378,7 +1456,7 @@ var Reason = (options = {}) => {
         case 'freevar': return name.equal(term2) ? term1 : term2
         case 'tcon': return new Term({tcon: [ term2[0], term2[1].map(tm => substFV(term1, tm, name)) ]})
         case 'dcon': return new Term({dcon: [ term2[0],
-          term2[1].map(arg => new Arg({arg: [ substFV(term1, arg[0], name), arg[1] ]})) ].concat([term2[2]].filter(x => x))})
+          term2[1].map(arg => new Arg({arg: [ substFV(term1, arg[0], name), arg[1] ]})) ].concat([term2[2]].filter(Boolean))})
         case 'case': return new Term({case: [ substFV(term1, term2[0], name),
           term2[1].map(match => new Match({clause: [ match[0], substFV(term1, match[1], name) ]})) ]})
         case 'star': case 'boundvar': return term2
@@ -1650,7 +1728,7 @@ var Reason = (options = {}) => {
 
     // Main typecheck
     return decls.reduce((p, decl) => p.then(acc => {
-      // log('tc', decl.toString())
+      log('typechecking...', decl.toString(), ...(decl.ctor === 'data' ? [] : [decl[1].print()]))
       let [name, info, ctors] = decl, mbValue, value, args;
       switch (decl.ctor) {
         case 'sig':
@@ -1716,7 +1794,7 @@ var Reason = (options = {}) => {
 
   // API
 
-  const R = { Data, Sig, Def, context },
+  const R = { Data, Sig, Def, context, parser, findMixfix, lexMixfix },
         sequence = (p => fn => p = fn ? p.then(fn) : p)(Promise.resolve());
   Object.defineProperty(R, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))) } }); // TODO: make all props read-only
 
