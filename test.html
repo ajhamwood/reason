@@ -195,23 +195,23 @@
 
     // proof example
     Id = new R.Data(
-      "Id'", "{A : Type}(x : A) : A -> Type",
-      [ "Refl : Id' x x" ]
+      "Id", "{A : Type}(x : A) : A -> Type",
+      [ "Refl : Id x x" ]
     )
     // cong = new R // Prints bad, typechecks bad
-    //   .Sig("cong", "{a b : Type}{x y : a} -> (f : a -> b) -> Id' x y -> Id' (f x) (f y)")
+    //   .Sig("cong", "{a b : Type}{x y : a} -> (f : a -> b) -> Id x y -> Id (f x) (f y)")
     //   .Def("@ f Refl := Refl")
 
     Leq = new R.Data(
       "_<=_ r20", "Nat -> Nat -> Type",
-      [ "LZ : {n : Nat} -> ((Z) <= n)", // TODO: all right identifiers parse as arguments, including tnames and dnames
-        "LS : {m n : Nat} (p : m <= n) -> ((S m) <= (S n))" ]
+      [ "LZ : {n : Nat} -> Z <= n",
+        "LS : {m n : Nat} (p : m <= n) -> (S m) <= (S n)" ]
     );
     twoLTone = new R.Sig(
       "twoLTone", "(S (S Z)) <= (S Z)" ).Def(
       "LS (LS LZ)" );
     // antisym = new R.Sig(
-    //   "antisym", "(m n : Nat) -> Leq' m n -> Leq' n m -> Id' Nat m n" ).Def([
+    //   "antisym", "(m n : Nat) -> Leq m n -> Leq n m -> Id Nat m n" ).Def([
     //     "@ .Z .Z (LZ .Z) (LZ .Z) := Refl",
     //     "@ .(S k) .(S l) (LS {k}{l} x) (LS .{l}.{k} y) := cong S (antisym k l x y)" ])
   })().catch(console.log)

@@ -881,14 +881,14 @@ var Reason = (options = {}) => {
 
           // f a b... : term
           case 'ann': return altMsg('Try Annotation', () => parseTerm(env, 'ctor'))
-            .catch(() => alt(() => parseTerm(env, 'app'))).then(annot)
+            .catch(() => alt(() => parseTerm(env, 'app')).then(annot))
             // (a * b) : term
             .catch(() => enclosure(['parens'], () => mixfix(env)).then(annot))
             // (lam) : term
             .catch(() => enclosure(['parens'], () => lambda(env)).then(annot))
 
           // c a b... *or* t a b...
-          case 'ctor': return altMsg('Try Constructor', () => { // TODO: x _c_ y *or* x _t_ y
+          case 'ctor': return altMsg('Try Constructor', () => {
             advance('Constructor term?');
             assertId();
             let ts = [], eps = [], name = token.id, ctor;
@@ -904,9 +904,10 @@ var Reason = (options = {}) => {
                   eps.push(ep);
                   return loop()
                 })
-            })().catch(() => new Term({[ctor]: [ new Name({global: [name]}),
-              ts.map((x, i) => ctor === 'tcon' ? x : new Arg({arg: [ x, eps[i] ]}))
-            ]}))
+            })()
+              .catch(() => new Term({[ctor]: [ new Name({global: [name]}),
+                ts.map((x, i) => ctor === 'tcon' ? x : new Arg({arg: [ x, eps[i] ]})) ]}))
+              .then(tm => mixfix(env, tm).catch(() => tm))
           })
 
           case 'app': return enclosure(['parens'], () => lambda(env))
@@ -927,22 +928,25 @@ var Reason = (options = {}) => {
                   return loop()
                 })
               })().catch(() => ts.reduce((acc, term, i) => acc = new Term({app: [acc, term, eps[i]]}), tm))
-            })) // .catch(() => tm))
+            }))
 
           case 'var': return alt(() => {
             // Type
             advance('Star?', {id: 'Type'});
             return new Term({star: []})
-          }) // c... *or* t...
-            .catch(() => alt(() => parseTerm(env, 'ctor')))
-             // a *or* [x=>][(x:X)->] x
+          }) // a *or* [x=>][(x:X)->] x
             .catch(() => alt(() => {
               advance('Variable term?');
               assertId();
-              let i = env.findIndex(bv => bv.id === token.id);
-              return ~i ? new Term({boundvar: [i]}) : new Term({freevar: [ new Name({global: [token.id]}) ]})
+              let name = token.id;
+              if (~parser.tnames.indexOf(name)) return new Term({tcon: [ new Name({global: [name]}), [] ]});
+              else if (~parser.dnames.indexOf(name)) return new Term({dcon: [ new Name({global: [name]}), [] ]});
+              let i = env.findIndex(bv => bv.id === name);
+              return ~i ? new Term({boundvar: [i]}) : new Term({freevar: [ new Name({global: [name]}) ]})
             })) // x _*...
             .then(tm => mixfix(env, tm).catch(() => tm))
+             // c... *or* t...
+            .catch(() => alt(() => parseTerm(env, 'ctor')))
              // (pi)
             .catch(() => enclosure(['parens'], () => parseTerm(env, 'pi')))
         }
@@ -1098,7 +1102,7 @@ var Reason = (options = {}) => {
               let falses = ts.filter(x => !x), holes = falses.length, mfTerm;
               if (~parser.tnames.indexOf(mfName)) mfTerm = new Term({tcon: [ new Name({global: [mfName]}),
                 ts.map(t => t || new Term({boundvar: [--holes + env.length]})), [] ]});
-              else if (~parser.dnames.indexOf(mfName)) mfTerm = new Term({tcon: [ new Name({global: [mfName]}),
+              else if (~parser.dnames.indexOf(mfName)) mfTerm = new Term({dcon: [ new Name({global: [mfName]}),
                 ts.map(t => new Arg({arg: [ t || new Term({boundvar: [--holes + env.length]}), false ]})), [] ]})
               else mfTerm = ts.reduce((a, t, i) =>
                 new Term({app: [ a, t || new Term({boundvar: [--holes + env.length]}), false ]}), new Term({freevar: [ new Name({global: [mfName]}) ]}));
