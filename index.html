@@ -128,10 +128,11 @@
             resize: vertical;
             font-size: inherit;
             font-family: 'univers';
+            font-variant-ligatures: none;
             color: #fff }
           #log {
-            white-space: pre;
             font-family: 'univers';
+            font-variant-ligatures: none;
             overflow-y: auto }
           button {
             position: absolute;
@@ -187,7 +188,7 @@ var app = new $.Machine({
       `    "S m := S (m + y)" ]});`,
       ``,
       `let plusTwo = new R.Def(`,
-      `  "plusTwo", "(_+ (S (S Z))) : Nat -> Nat" );`,
+      `  "plusTwo", "(+) (S (S Z)) : Nat -> Nat" );`,
       ``,
       `let twoPlusTwo = new R.Def(`,
       `  "twoPlusTwo", "plusTwo (S (S Z)) : Nat" );`,
