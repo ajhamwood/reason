@@ -1,5 +1,5 @@
 var Reason = (options = {}) => {
-  let { debug = {} } = options;
+  let { debug = {}, printer = {} } = options;
 
   // Errors and logging
 
@@ -36,6 +36,7 @@ var Reason = (options = {}) => {
             parser_notvalid: which => `Parser error: not a valid ${which}`,
             parser_mixfix_miss_id: (which, unapp) => `Parser error: missing identifiers ${unapp} of mixfix operator ${which}`,
             parser_mixfix_bad: (which, mf) => `Parser error: unexpected identifier ${which} in mixfix ${mf}`,
+            parser_mixfix_tcon_app: which => `Parser error: type constructor mixfix ${which} arguments must be given from the left,`,
 
             // Pretty printer errors
             print_value: quoted => `Print error: warning - tried to print a Value (quoted: ${quoted})`,
@@ -696,7 +697,7 @@ var Reason = (options = {}) => {
               if (name.match(/_/)) arg.mixfixes.push([name, parseOptions.fixity]);
               return parseTerm([], 'pi')
                 .then(result => endTest([new Decl({sig: [ new Name({global: [name]}), result ]})]))
-                .catch(() => error.parser_notvalid('signature'))
+                .catch(e => error.append(e, 'parser_notvalid', 'signature'))
             })
 
             case 'def': return altNames(arg => {
@@ -717,7 +718,7 @@ var Reason = (options = {}) => {
               if (name.match(/_/)) arg.mixfixes.push([name, parseOptions.fixity]);
               return parseTerm([], 'pi')
                 .then(result => endTest([new Decl({def: [ new Name({global: [name]}), result ]})]))
-            })).catch(() => error.parser_notvalid('definition'))
+            })).catch(e => error.append(e, 'parser_notvalid', 'definition'))
 
             case 'ddef': return altNames(arg => {
               // name bindings : type
@@ -727,7 +728,7 @@ var Reason = (options = {}) => {
               arg.tnames.push(name);
               return dataDef([], 'ddef')
                 .then(result => endTest([new Decl({data: [ new Name({global: [name]}), result, [] ] })]))
-                .catch(() => error.parser_notvalid('type definition'))
+                .catch(e => error.append(e, 'parser_notvalid', 'type definition'))
             })
 
             case 'cdef': return altNames(arg => {
@@ -740,7 +741,7 @@ var Reason = (options = {}) => {
               advance('Type constructor separator?', {value: 'op', id: ':'});
               return dataDef([], 'cdef')
                 .then(result => endTest([new Ctor({ctor: [ new Name({global: [name]}), result ]})]))
-                .catch(() => error.parser_notvalid('constructor definition'))
+                .catch(e => error.append(e, 'parser_notvalid', 'constructor definition'))
             })
 
             case 'case': return altNames(arg => {
@@ -750,7 +751,7 @@ var Reason = (options = {}) => {
               if (name.match(/_/)) arg.mixfixes.push([name, parseOptions.fixity]);
               return caseOf([])
                 .then(([bvs, fn]) => endTest([bvs, x => new Decl({def: [ new Name({global: [name]}), fn(x) ]})]))
-                .catch(() => error.parser_notvalid('case statement'))
+                .catch(e => error.append(e, 'parser_notvalid', 'case statement'))
             })
 
             case 'pat': return alt(() => {
@@ -768,14 +769,14 @@ var Reason = (options = {}) => {
                   return parseTerm(env, 'ann')
                     .then(term => endTest([new Match({clause: [pat, term]})])) // This should be a binder
                 })
-                .catch(() => error.parser_notvalid('pattern'))
+                .catch(e => error.append(e, 'parser_notvalid', 'pattern'))
             })
 
             case 'let': return alt(() => {
               // name := term
               advance('Let/where?');
               return Promise.reject()
-                .catch(() => error.parser_notvalid('let construct'))
+                .catch(e => error.append(e, 'parser_notvalid', 'let construct'))
             })
           }
         })
@@ -1100,8 +1101,10 @@ var Reason = (options = {}) => {
             .catch(err => {
               if (!err.message) error.parser_mismatch(token, index);
               let falses = ts.filter(x => !x), holes = falses.length, mfTerm;
-              if (~parser.tnames.indexOf(mfName)) mfTerm = new Term({tcon: [ new Name({global: [mfName]}),
-                ts.map(t => t || new Term({boundvar: [--holes + env.length]})), [] ]});
+              if (~parser.tnames.indexOf(mfName)) {
+                if (ts.length - falses.length !== (ts.slice(0, ts.length - ts.slice().reverse().findIndex(Boolean))).length) error.parser_mixfix_tcon_app(mfName);
+                return new Term({tcon: [ new Name({global: [mfName]}), ts.slice(0, ts.length - ts.slice().reverse().findIndex(Boolean)), [] ]})
+              }
               else if (~parser.dnames.indexOf(mfName)) mfTerm = new Term({dcon: [ new Name({global: [mfName]}),
                 ts.map(t => new Arg({arg: [ t || new Term({boundvar: [--holes + env.length]}), false ]})), [] ]})
               else mfTerm = ts.reduce((a, t, i) =>
@@ -1134,28 +1137,47 @@ var Reason = (options = {}) => {
       function parensIf (bool, string) { return bool ? `(${string})` : string }
       function bracesIf (bool, string) { return bool ? `{${string}}` : string }
       function enclosureIf (bBool, pBool, string) { return bBool ? bracesIf(true, string) : parensIf(pBool, string) }
-      function nestedLambda (body, eps, index) { return body.ctor === 'lam' ?
-        nestedLambda(body[0], eps.concat([body[1]]), index + 1) :
-        Array.from(Array(index), (_, i) => bracesIf(eps[i], vars(i))).join(', ') + ' => ' + recPrint(body, 0, index) }
+      function checkMf (fun, args, index) {
+        if (printer.noMixfixes || !fun.ctor) return false;
+        switch (fun.ctor) {
+          case 'app':
+          if (fun[1].ctor === 'boundvar') anns[index - fun[1][0] - 1] = 1;
+          return checkMf(fun[0], args.concat([
+            fun[1].ctor === 'boundvar' ? (fun[1][0] + 1 > index ? '_' : ` ${vars(fun[1][0])} `) : ` ${recPrint(fun[1], 2, index)} `
+          ]), index)
+          case 'freevar': case 'tcon': case 'dcon':
+          if (fun[0].ctor === 'global' && ~parser.mixfixes.findIndex(x => x[0] === fun[0][0]))
+            return lexMixfix(fun[0][0]).map((token, i) => token === '_' ? (args.pop() || '_') : token).join('').trim()
+          default: return false
+        }
+      }
+      function nestedLambda (body, eps, index) { return body.ctor === 'lam' ? nestedLambda(body[0], eps.concat([body[1]]), index + 1):
+        (checkMf(body[0], [], index) ||
+          Array.from(Array(index), (_, i) => bracesIf(eps[i], vars(i))).join(', ') + ' => ' + recPrint(body, 0, index)) }
       function nestedPi (range, domain, eps, index) { return domain.ctor === 'pi' ?
         nestedPi([[domain[0], index]].concat(range), domain[1], eps.concat([domain[2]]), step(index + 1)) :
-        range.reverse().map(([tm, i], j) => enclosureIf(eps[j], true, `[${i}]` + recPrint(tm, 1, i)) + ' -> ').join('') + recPrint(domain, 0, index) }
+        (checkMf(domain, [], index) ||
+          range.reverse().map(([tm, i], j) => enclosureIf(eps[j], true, `[${i}]` + recPrint(tm, 1, i)) + ' -> ').join('') + recPrint(domain, 0, index)) }
       if (testObj(Term)) {
         switch (obj.ctor) {
           case 'star': return 'Type'
           case 'ann': return parensIf(int1 > 1, recPrint(obj[0], 2, int2) + ' : ' + recPrint(obj[1], 0, int2))
           case 'pi': return obj[1].ctor === 'pi' ?
             parensIf(int1 > 1, nestedPi([[obj[1][0], step(int2 + 1)], [obj[0], int2]], obj[1][1], [obj[2], obj[1][2]], step(int2 + 2))) :
-            parensIf(true, bracesIf(obj[2], `[${int2}]` + recPrint(obj[0], obj[2], int2)) + ' -> ' + recPrint(obj[1], 0, step(int2 + 1)))
+            parensIf(true, bracesIf(obj[2], `[${int2}]` + recPrint(obj[0], obj[2], int2)) + ' -> ' +
+              (checkMf(obj[1], [], step(int2 + 1)) || recPrint(obj[1], 0, int2 + 1)))
           case 'lam': return parensIf(int1 > 0, obj[0].ctor === 'lam' ?
             nestedLambda(obj[0][0], [obj[1], obj[0][1]], int2 + 2) :
-            bracesIf(obj[1], vars(int2)) + ' => ' + recPrint(obj[0], 0, int2 + 1))
-          case 'app': return parensIf(int1 > 1, recPrint(obj[0], 2 - (obj[0].ctor === 'app'), int2) + ' ' + bracesIf(obj[2], recPrint(obj[1], 2 + obj[2], int2)))
+            (checkMf(obj[0], [], int2) || bracesIf(obj[1], vars(int2)) + ' => ' + recPrint(obj[0], 0, int2 + 1))) // this checkMf index...
+          case 'app': return parensIf(int1 > 1, checkMf(obj, [], int2) ||
+            recPrint(obj[0], 2 - (obj[0].ctor === 'app'), int2) + ' ' + bracesIf(obj[2], recPrint(obj[1], 2 + obj[2], int2)))
           case 'boundvar': anns[int2 - obj[0] - 1] = 1; return vars(int2 - obj[0] - 1)
           case 'freevar': return recPrint(obj[0], 0, int2)
-          case 'tcon': return parensIf(int1 > 2 + !obj[1].length, recPrint(obj[0], 0, int2) + obj[1].map(tm => ' ' + recPrint(tm, 2, int2)).join(''))
-          case 'dcon': return parensIf(int1 > 1 + !obj[1].length, recPrint(obj[0], 0, int2) +
-            obj[1].map(arg => ' ' + (arg[1] ? `{${recPrint(arg[0], 3, int2)}}` : recPrint(arg[0], 2, int2))).join(''))
+          case 'tcon': return parensIf(int1 > 2 + !obj[1].length, checkMf(obj, obj[1].map(tm => ` ${recPrint(tm, 2, int2)} `), int2) ||
+            recPrint(obj[0], 0, int2) + obj[1].map(tm => ' ' + recPrint(tm, 2, int2)).join(''))
+          case 'dcon': return parensIf(int1 > 1 + !obj[1].length,
+            checkMf(obj, obj[1].map(arg => ` ${(arg[1] ? `{${recPrint(arg[0], 3, int2)}}` : recPrint(arg[0], 2, int2))} `), int2) ||
+            recPrint(obj[0], 0, int2) + obj[1].map(arg => ' ' + (arg[1] ? `{${recPrint(arg[0], 3, int2)}}` : recPrint(arg[0], 2, int2))).join(''))
           case 'case': return recPrint(obj[0], 0, int2) + ' |' +
             obj[1].map(match => '\n  ' + recPrint(match[0], 0, int2) + ' := ' + recPrint(match[1], 0, int2))
         }

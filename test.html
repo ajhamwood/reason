@@ -17,11 +17,14 @@
 
   // Testing
 
-  const R = Reason({debug: {lexer: false, parser: false, parsedDecl: false, typechecker: false}});
+  const R = Reason({
+    debug: {lexer: false, parser: false, parsedDecl: false, typechecker: false},
+    printer: {noMixfixes: false}
+  });
 
   let ap, id1, id2, Void, Unit, Bool, Nat, Vec, Fin, Sigma;
   let id3, tt, lamTest, plus, _plus_, onePlusOne, listNat, theList, listMap, allAddTwo, someList, half, tail, vecNat, theVec;
-  let Id, cong, Leq, twoLTone, antisym;
+  let Id, cong, Leq, ltZero, twoLTone, antisym;
 
   let test;
 
@@ -207,6 +210,7 @@
       [ "LZ : {n : Nat} -> Z <= n",
         "LS : {m n : Nat} (p : m <= n) -> (S m) <= (S n)" ]
     );
+    ltZero = new R.Sig('ltZero', '{n : Nat} -> (n <= Z)');
     twoLTone = new R.Sig(
       "twoLTone", "(S (S Z)) <= (S Z)" ).Def(
       "LS (LS LZ)" );
