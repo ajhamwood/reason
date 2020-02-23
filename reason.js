@@ -1073,7 +1073,7 @@ var Reason = (options = {}) => {
           let [mfName, fixity] = parser.mixfixes[mi], lexAp = lexMixfix(name), lexOp = lexMixfix(mfName);
           if (mbTerm) {
             if (lexAp[0] === '_') throw new Error('');
-            ts.push(mbTerm)
+            ts.unshift(mbTerm)
           }
           if (pi > 1) error.parser_mixfix_miss_id(mfName, lexOp.slice(!!mbTerm, pi).join(''));
           ts = ts.concat(lexAp.filter(x => x === '_').fill(false));
@@ -1081,7 +1081,7 @@ var Reason = (options = {}) => {
           return (function loop () {
             if (lexOp.length === 1 && lexOp[0] === '_') return parseTerm(env, 'app').then(tm => {
               // ..._a x
-              ts.push(tm);
+              ts.unshift(tm);
               lexOp.shift();
               return loop()
             });
@@ -1093,22 +1093,23 @@ var Reason = (options = {}) => {
               lexOp.shift(); // the '_' for the current term
               lexAp = lexMixfix(name);
               if (lexAp.some((token, i) => token !== lexOp[i])) error.parser_mixfix_bad(name, mfName);
-              (ts = ts.concat(lexAp.filter(x => x === '_').fill(false))).push(tm);
+              (ts = lexAp.filter(x => x === '_').fill(false).concat(ts)).unshift(tm);
               lexOp.splice(0, lexAp.length);
               return loop()
             }))
           })()
             .catch(err => {
               if (!err.message) error.parser_mismatch(token, index);
-              let falses = ts.filter(x => !x), holes = falses.length, mfTerm;
+              ts = ts.slice(ts.concat([true]).findIndex(Boolean));
+              let falses = ts.filter(x => !x), i = 0, mfTerm;
               if (~parser.tnames.indexOf(mfName)) {
-                if (ts.length - falses.length !== (ts.slice(0, ts.length - ts.slice().reverse().findIndex(Boolean))).length) error.parser_mixfix_tcon_app(mfName);
-                return new Term({tcon: [ new Name({global: [mfName]}), ts.slice(0, ts.length - ts.slice().reverse().findIndex(Boolean)), [] ]})
+                if (ts.length - falses.length !== ts.length) error.parser_mixfix_tcon_app(mfName);
+                return new Term({tcon: [ new Name({global: [mfName]}), ts.reverse(), [] ]})
               }
               else if (~parser.dnames.indexOf(mfName)) mfTerm = new Term({dcon: [ new Name({global: [mfName]}),
-                ts.map(t => new Arg({arg: [ t || new Term({boundvar: [--holes + env.length]}), false ]})), [] ]})
-              else mfTerm = ts.reduce((a, t, i) =>
-                new Term({app: [ a, t || new Term({boundvar: [--holes + env.length]}), false ]}), new Term({freevar: [ new Name({global: [mfName]}) ]}));
+                ts.reverse().map(t => new Arg({arg: [ t || new Term({boundvar: [i++ + env.length]}), false ]})), [] ]})
+              else mfTerm = ts.reduceRight((a, t) =>
+                new Term({app: [ a, t || new Term({boundvar: [i++ + env.length]}), false ]}), new Term({freevar: [ new Name({global: [mfName]}) ]}));
               return falses.reduce(a => new Term({lam: [a, false]}), mfTerm)
             })
         })
@@ -1827,7 +1828,7 @@ var Reason = (options = {}) => {
 
         case 'datasig': error.tc_internal()
       }
-    }), Promise.resolve([])).catch(e => {console.log(e);throw e})
+    }), Promise.resolve([]))
   }
 
 
@@ -1835,7 +1836,8 @@ var Reason = (options = {}) => {
 
   // API
 
-  const R = { Data, Sig, Def, context, parser },
+  const setOptions = opts => { Object.assign(options, opts); debug = options.debug, printer = options.printer },
+        R = { Data, Sig, Def, context, setOptions },
         sequence = (p => fn => p = fn ? p.then(fn) : p)(Promise.resolve());
   Object.defineProperty(R, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))) } }); // TODO: make all props read-only
 

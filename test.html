@@ -101,7 +101,7 @@
       });
     onePlusOne = await new R.Sig(
       "onePlusOne", "Nat").Def(
-      "(S Z) + (S Z)"     ).ready;
+      "(+) (S Z) (S Z)"  ).ready;
 
     console.log(`%conePlusOne =`, 'font-weight: bold; color: deeppink', onePlusOne.result.print());
 
