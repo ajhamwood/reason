@@ -29,6 +29,20 @@
       font-weight: bold;
       font-style: normal
     }
+    @font-face {
+      font-family: 'crimson';
+      src: url('fonts/Crimson-Italic.woff')  format('woff'),
+           url('fonts/Crimson-Italic.woff2') format('woff2');
+      font-weight: normal;
+      font-style: italic
+    }
+    @font-face {
+      font-family: 'univers';
+      src: url('fonts/UniversNextTypewriter.woff')  format('woff'),
+           url('fonts/UniversNextTypewriter.woff2') format('woff2');
+      font-weight: normal;
+      font-style: normal
+    }
     body {
       margin: 4vh 25vw 0 15vw;
       background: url(images/bg.png);
@@ -38,7 +52,10 @@
       border-top: 10px solid white }
     section {
       clear: right;
-      margin-bottom: 10vmin }
+      margin-bottom: 14vmin }
+    section:first-child p {
+      font-variant: small-caps;
+      padding: 0 3rem }
     h1 {
       font-family: 'sketchblock';
       font-weight: normal;
@@ -65,8 +82,8 @@
       height: 100%;
       border: 0 }
     .cut-in {
-      margin: 4vh -15vw 16vh 4vw;
-      --top: 8rem;
+      margin: 4vh -15vw 27vh 4vw;
+      --top: 15rem;
       --width: 35vw;
       --height: 30rem;
       --bottom: 100vh;
@@ -77,6 +94,18 @@
       shape-outside: polygon(0 var(--top), var(--width) var(--top), var(--width) var(--bottom), 0 var(--bottom));
       clip-path: polygon(0 0, var(--width) 0, var(--width) calc(var(--bottom) - var(--top)), 0 calc(var(--bottom) - var(--top)))
     }
+    a {}
+    strong {}
+    em {}
+    code {
+      font-family: 'univers';
+      font-variant-ligatures: none;
+      font-size: 1.3rem;
+      background: #fff2;
+      --border: .4rem;
+      padding: var(--border);
+      margin: calc(- var(--border)) }
+    blockquote {}
   </style>
   <script src='reason.js' defer></script>
   <script src='machine.js'></script>
@@ -167,39 +196,35 @@
   ></template>
   <template id='section'
     ><section>
-      <h2></h2>
       <aside><iframe></iframe></aside>
     </section
   ></template>
   <script>
 // Page state
+// ['', [], [].join('\n'), true]
 var app = new $.Machine({
   sections: [
-    ['Documentation and tutorial coming soon...', [], [
-      `let Nat = new R.Data(`,
-      `  "Nat", "Type",`,
-      `  [ "Z : Nat",`,
-      `    "S : (n : Nat) -> Nat" ]);`,
-      ``,
-      `let plus = new R.Sig(`,
-      `  "_+_ r6", "Nat -> Nat -> Nat" ).Def({`,
-      `  "x y | x":`,
-      `  [ "Z   := y",`,
-      `    "S m := S (m + y)" ]});`,
-      ``,
-      `let plusTwo = new R.Def(`,
-      `  "plusTwo", "(+) (S (S Z)) : Nat -> Nat" );`,
-      ``,
-      `let twoPlusTwo = new R.Def(`,
-      `  "twoPlusTwo", "plusTwo (S (S Z)) : Nat" );`,
-      ``,
-      `await R.ready;`,
-      ``,
-      `[Nat(), plus, plusTwo, twoPlusTwo]`,
-      `  .map(x => log(x.term.print()));`,
-      ``,
-      `log('"2 + 2 ="', twoPlusTwo.result.print())`
-    ].join('\n'), false]
+    [['#Are you sure about that?#',
+
+      `A sentiment expressed so well by the great Jonathan Cena, uncertainty is something that touches all of us. Contrary to what some may think, a computer program won't help you separate reality from fiction when it comes to affairs of heart, or of society at large, but a little boost of confidence in regards to things doing what they say on the label wouldn't go astray in this fast-paced modern world. I'm not about to tell you dependent types or formal verification will spell the end of test driven development, nor that my little summer project to write a programming language in Javascript is fit for use in anything more your own fun side projects. But if someone told you that there was a system within which the properties of a program written on the label were mathematically guaranteed to be true, that would make you want to see for yourself, wouldn't it?`,
+
+      `So without further ado, I would like to introduce reason.js, an interpreter for my language, which has some nifty features I'm kind of proud of, as well as some others that are still works in progress. I have also included little Javascript sandboxes in each section so you can experiment with using features for yourself. Edit the source code in the upper half, then click run to see the results in the lower half. You can also move the divider up and down (the handle is on the right). Try it!`
+    ], [
+      `log('Welcome to my TED talk')`
+    ].join('\n'), true
+    ], [[
+      `#Managing expectations#`,
+
+      `Right off the bat, there are still some serious limitations with the current state of the project. Some of the most serious are a lack of strings and decimal numbers. While I have plans to incorporate at a later date things like these which seem absolutely mandatory in any programming language, the difficulty cuts to the heart of what this is all about. In a bog-standard programming language such as Javascript, if you want to use a string you might write \`\`let myString = 'sup';\`\`, and be good to go. But what if you want to make statements //about// the string? Or, about //strings// in general?`,
+
+      `You might go, \`\`let myStrLen = myString.length;\`\`, and sure, this will give you a value of 3, which is the length of \`\`myString\`\`. But who is making these decisions? We're all just hoping that the person who programmed the \`\`length\`\` property made sure it was an integer, never negative, not off-by-one, and so on. You might call length a million times and get correct results every time, without ever discovering that if you call it on the string "never gonna give you up", the developer left an easter egg to print the entire lyrics to the console.`,
+
+      `This has always been the allure of functional languages such as Scala, Haskell, or OCaml - only certain //types// are allowed to print to console, or return numerical values, or operate on any kind of value as long as it's a stream of them. Types have a rich mathematical structure that allows them to take on any form you care to come up with - however, types are limited by the language you use. Javascript is infamous for playing fast and loose with type coercion (try evaluating \`\`[[][[]]+[]][+[]][-~[]]\`\` for example, but there are a million more), so sometimes you just can't know if the \`\`false\`\` your function received is really a false, or whether it was an \`\`undefined\`\` or a \`\`null\`\` in a previous life.`,
+
+      `So, if I want to define a type of strings, what do I need to know? Well, to oversimplify, a string can be encoded as a list of chunks of 8 binary digits. So now we need to define both binary digits, chunks of 8 of them, and lists of chunks.`,
+
+      `... where am I going with this`
+    ], [].join('\n'), false]
   ]
 });
 
@@ -207,21 +232,54 @@ var app = new $.Machine({
 $.targets({
   load () { app.emit('load-editors') },
   app: { 'load-editors' () {
-    this.sections.forEach(([title, ps, source, cutin]) => {
+    this.sections.forEach(([ps, source, cutin]) => {
       let section = $.load('section', 'main')[0][0];
-      $('h2', section)[0].textContent = title;
-      for (let p of ps) {
-        let ptag = document.createElement('p');
-        ptag.textContent = p;
-        section.appendChild(ptag)
-      }
-      if (source && source.length) {
+      for (let p of ps) write(p, section);
+      if (typeof source === 'string' && source.length) {
         $('iframe', section)[0].srcdoc = $('template#editor')[0].innerHTML.replace(/\[\]/g, source);
         if (cutin) $('aside', section)[0].classList.add('cut-in');
       } else $('aside', section)[0].remove();
     })
   } }
 });
+
+// Oh god. Very old markup code I had lying around
+
+function write (raw, section) {
+  //  **bold**  //italic//  ``monospaced``  [[link url]]  [[link url|link text]]
+  //  >quote (\>no quote)  ␣␣↵line break  ↵↵paragraph  #(#..)header#
+  function escape (text) {
+    var div = document.createElement("div");
+    div.appendChild(document.createTextNode(text));
+    return div.innerHTML
+  }
+  var r = escape(raw), newline = r.indexOf("\r\n") !== -1 ? "\r\n" : r.indexOf("\n") !== -1 ? "\n" : "";
+  r = r
+    .replace(new RegExp(" + " + newline, "g"), "<br />" + newline)
+    .replace(/^(#{1,5})([^#]*)#/, function ($0, $1, $2) {
+      var l = $1.length + 1;
+      if (l === 2) {
+        var slug = encodeURI( $2.replace(/\s+/g, "-").replace(/\*\*(.*)\*\*/g, "$1").replace(/``(.*)``/g, "$1")
+          .replace(/^/," ").replace(/([^:])\/\/(((?!\/\/)[\s\S])*)\/\//gm, "$2").replace(/^ /,"")
+          .replace(/\[\[([^\]|]*)\]\]/g, "$1").replace(/\[\[([^|]*)\|([^\]]*)\]\]/g, "$2")
+          .replace(/[^\w\-.~!$&'()*+,;=:@]/g, "").toLowerCase() );
+        return "<header><a class='hashlink' id='" + slug + "' href='#" + slug + "'></a><h2>" + $2 +
+          "</h2></header>"
+      } else return "<h" + l + ">" + $2 + "</h" + l + ">"
+    })
+    .replace(/``([^`]*)``/g, "<code>$1</code>")
+    .replace(/\*\*([^*]*)\*\*/g, "<strong>$1</strong>")
+    .replace(/^/," ").replace(/([^:])\/\/(((?!\/\/)[\s\S])*)\/\//gm, "$1<em>$2</em>").replace(/^ /,"")
+    .replace(/\[\[([^\]|]*)\]\]/g, function ($0, $1) { return "<a href='" + $1.replace(/'/g, "&apos;") + "'>" + $1 + "</a>" })
+    .replace(/\[\[([^|]*)\|([^\]]*)\]\]/g, function ($0, $1, $2) { return "<a href='" + $1.replace(/'/g, "&apos;") + "'>" + $2 + "</a>" });
+  for (var p = (newline === "" ? [r] : r.split(newline + newline)), i = 0; i < p.length; i++) {
+    p[i] = p[i]
+      .replace(/^&gt;(.*)/g, "<blockquote>$1</blockquote>").replace(/^\\&gt;/g, "&gt;")
+      .replace(/^( +)/g, function (match) { return match.replace(/\s/g,"&nbsp;") });
+    p[i] = p[i].replace(/([\s\S]+)/g, "<p>$1</p>")
+  }
+  section.innerHTML += p.join(newline);
+}
 
 $.queries({})
   </script>
