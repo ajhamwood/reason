@@ -239,7 +239,7 @@ var app = new $.Machine({
         `If you now include the file \`\`reason.js\`\` in the root directory in your project, you will be able to access the interpreter by calling \`\`const R = Reason()\`\`.`
     ], [].join('\n'), false
     ], [[
-      `#Objection!#`,
+      `#Interpreter#`,
       ``,
       `The workhorse of reason.js are the methods \`\`Sig\`\`, \`\`Def\`\` and \`\`Data\`\` on the object you just initialised. They can be used to initialise types, type constructors, type signatures, and functions, which are all you need to access the full power of dependent types.`,
       ``,
@@ -266,7 +266,7 @@ var app = new $.Machine({
       `log(Object.getOwnPropertyNames(identity))`
     ].join('\n'), true
     ], [[
-      `#The term definition API#`,
+      `#Term definitions#`,
       ``,
       `First, let's look at the immediately available properties.`,
       ``,
@@ -299,7 +299,50 @@ var app = new $.Machine({
       `    idid = await identity(idType, identity).ready;`,
       ``,
       `log(idid.result.print())`
-    ].join('\n'), true]
+    ].join('\n'), true
+    ], [[
+      `#Signature definitions#`,
+      ``,
+      `The next constructor method we will look at is \`\`Sig\`\`, which creates signature definitions that a term can be typechecked against. This is needed because not all definitions can fit snugly on a single line as our examples so far have. However, for simplicity let us return to our identity function example. It was given in //annotated form//, which is when term and type information are given together, and has the syntax \`\`term : type\`\`. Thus the term part is \`\`t, x => x\`\`, while the type part is \`\`(T : Type) -> T -> T\`\`. You may notice that this type signature also contains a colon, and indeed there is another type annotation, this time occurring within a term rather than at the end. It says that the \`\`T\`\`, wherever it occurs afterwards in the type term, has type \`\`Type\`\`.`,
+      ``,
+      `To declare the signature part of our definition on its own, we can write:`,
+      ``,
+      `>let identity = new R.Sig("id", "(T : Type) -> T -> T");`,
+      ``,
+      `Now if we have a look at the properties, we get \`\`Def\`\`, \`\`name\`\` and \`\`ready\`\`  available immediately, and \`\`type\`\`, \`\`print\`\` and \`\`result\`\` available asynchronously. This is different to what we had for term definitions: the \`\`term\`\` property is missing for obvious reasons, and since it is a signature, it cannot be applied and thus we don't need \`\`appliedTerms\`\` (the jury is still out on whether I will add \`\`toString\`\` later on). The new \`\`Def\`\` property is suggestive, and as you might guess, it is used to chain a term definition to our signature object. We will look at it in more detail a little later, when we have some more interesting terms at our disposal.`
+    ], [
+      `let identity = new R.Sig(`,
+      `  "id", "(T : Type) -> T -> T"`,
+      `);`,
+      ``,
+      `log(Object.getOwnPropertyNames(identity));`,
+      ``,
+      `await R.ready;`,
+      ``,
+      `log(Object.getOwnPropertyNames(identity))`
+    ].join('\n'), true
+  ], [[
+    `#Data definitions#`,
+    ``,
+    `As you may be beginning to realise, there is only so far we can go with function terms. Or, I should rephrase, want to go. As Church's famous theorem tells us, if we have functions, we can encode pretty much any mathematical structure we like. Unfortunately, Church encodings of even basic things like numbers or Booleans are highly unwieldy, and we already have types available. So let us now define our first real type:`,
+    ``,
+    `>let void = new R.Data("Void", "Type", []);`,
+    ``,
+    `It's... not much. This type corresponds to the bottom type ⊥ in type theory, and is characterised as a type without any terms. We can see that it has a name field, a type field, as well as something new as an empty array. This something new is necessary because types are potentially //constructible//, so we need to define the ways in which they can be constructed. The simplest constructible type, corresponding to the top type ⊤, can be defined like this:`,
+    ``,
+    `>let unit = new R.Data("Unit", "Type", [ "TT : Unit" ]);`
+  ], [
+    `let Void = new R.Data("Void", "Type", []),`,
+    `    Unit = new R.Data("Unit", "Type", [ "TT : Unit" ]);`,
+    ``,
+    `log(Object.getOwnPropertyNames(Void));`,
+    `log(Object.getOwnPropertyNames(Unit));`,
+    ``,
+    `await R.ready;`,
+    ``,
+    `log(Object.getOwnPropertyNames(Void()));`,
+    `log(Object.getOwnPropertyNames(Unit()));`
+  ].join('\n'), true]
   ]
 });
 
