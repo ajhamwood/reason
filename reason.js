@@ -13,7 +13,7 @@ var Reason = (options = {}) => {
             mixfix_overlap: (tested, given) => `Interpreter error: ${tested} overlaps syntax with ${given}`,
             nosig: n => `Interpreter error: no signature has been declared for ${n}`,
             notfound: n => `Interpreter error: declaration for ${n} cannot be found`,
-            unchecked: () => 'Interpreter error: not yet typechecked',
+            unchecked: which => `Interpreter error: ${which} not yet typechecked`,
             malf: which => `Interpreter error: malformed ${which}`,
             bad_id_name: (role, name) => `Interpreter error: bad ${role} name in ${name}`,
 
@@ -133,18 +133,18 @@ var Reason = (options = {}) => {
   // Interpreter
 
   class Data {
-    constructor (nameString, ddef, cdefs, builtins = {}) {
+    constructor (nameString, ddef, cdefs, converters = {}) {
       let nameFix = str => str.match(/^(([a-zA-Z][a-zA-Z0-9]*[\']*)\s.*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r)[\d]{1,3}))?$/).slice(1).filter(Boolean);
       let [name, aux] = nameFix(nameString).filter(Boolean);
       name = name || fixName;
       wait('data', name);
       let readyDecl = false, ctorNames = cdefs.map(cdef => typeof cdef === 'string' ? [...nameFix(cdef), {}] :
             Object.entries(cdef)[0].flatMap((x, i) => i ? x : nameFix(x))),
-          { fromJS = () => {}, ...dBuiltins } = builtins, fromJSThis = {}, root,
-          jsTerm = ctorNames.reduce((a, x) => Object.assign(a, { [x[0].match(/\w+/) ? x[0].toLowerCase() : x[0]]: () => error.unchecked() }),
-            { appliedTerms: [], ...dBuiltins });
-      // Data(name, tcon, [dcons], {...builtins})
-      // Data(name, tcon, [{dcons}], {...builtins})
+          { fromJS = () => {}, ...dConverters } = converters, fromJSThis = {}, root,
+          jsTerm = ctorNames.reduce((a, x) => Object.assign(a, { [x[0].match(/\w+/) ? x[0].toLowerCase() : x[0]]: () => error.unchecked(name) }),
+            { appliedTerms: [], ...dConverters });
+      // Data(name, tcon, [dcons], {...converters})
+      // Data(name, tcon, [{dcons}], {...converters})
       sequence(() => cdefs.reduce(
         (p, cdef, i) => p.then(acc => tokenise({sourceString: ctorNames[i][0]})
           .then(lex => parse(lex, 'cdef', {fixity: ctorNames[i][1]}))
@@ -165,7 +165,7 @@ var Reason = (options = {}) => {
         if (readyDecl) {
           let { term, type, params } = root, jsTyTerm = { appliedTerms: typeArgs, type };
           if (term) Object.assign(jsTyTerm, { term, print: print(term) });
-          ctorNames.forEach(([_, ctorName, cBuiltins]) => {
+          ctorNames.forEach(([_, ctorName, cConverters]) => {
             let lcname = ctorName.toLowerCase(), ctor;
             jsTyTerm[lcname] = fromJSThis[lcname] = ctor = Object.assign((...termArgs) => {
               // Initialise a term of the given type
@@ -187,11 +187,11 @@ var Reason = (options = {}) => {
                   unwait('data', fresh);
                 })
               };
-              jsCtTerm = Object.assign(() => jsCtTerm, Object.assign({ toString: () => `<${ctorName}>` }, Object.entries(cBuiltins)
+              jsCtTerm = Object.assign({[ctorName]: () => jsCtTerm}[ctorName], Object.assign({ toString: () => `<${ctorName}>` }, Object.entries(cConverters)
                 .reduce((a, [fname, fn]) => Object.assign(a, { [fname]: fn.bind(jsCtTerm.appliedTerms) }), jsCtTerm))); // Naming conflicts?
               Object.defineProperty(jsCtTerm, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsCtTerm) } });
               return jsCtTerm
-            }, cBuiltins)
+            }, cConverters)
           });
           // Initialise a type
           if (typeArgs.length) {
@@ -212,12 +212,12 @@ var Reason = (options = {}) => {
               unwait('data', fresh)
             })
           }
-          jsTyTerm = Object.assign((...typeArgs) => curry(jsTyTerm, typeArgs), { ...jsTyTerm, toString: () => `<${name}>`, fromJS: fromJS.bind(fromJSThis) });
+          jsTyTerm = Object.assign({[name]: (...typeArgs) => curry(jsTyTerm, typeArgs)}[name], { ...jsTyTerm, toString: () => `<${name}>`, fromJS: fromJS.bind(fromJSThis) });
           Object.defineProperty(jsTyTerm, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsTyTerm) } });
           return jsTyTerm
-        } else error.unchecked()
+        } else error.unchecked(name)
       };
-      jsTerm = Object.assign((...typeArgs) => curry(jsTerm, typeArgs), jsTerm);
+      jsTerm = Object.assign({[name]: (...typeArgs) => curry(jsTerm, typeArgs)}[name], jsTerm);
       Object.defineProperty(jsTerm, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsTerm) } });
       return jsTerm
     }
@@ -228,14 +228,14 @@ var Reason = (options = {}) => {
       // Sig(name || "name fixity", signature || sigdef)
       let [name, aux] = nameString.match(/^(([a-zA-Z][a-zA-Z0-9]*[\']*)\s.*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r)[\d]{1,3}))?$/).slice(1).filter(Boolean);
       wait('sig', name);
-      let ready = false, jsTerm = {}, jsSig = { Def: (...args) => jsTerm = Object.assign(new Def(name, ...args), jsTerm) };
-      Object.defineProperty(jsSig, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsSig) } });
+      let ready = false, jsSig = { Def: (...args) => jsSig = Object.assign(new Def(name, ...args), jsSig) };
+      Object.defineProperties(jsSig, { name: {value: name}, ready: { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsSig) } } });
       sequence(() => tokenise({name, sourceString: declString})
         .then(lex => parse(lex, 'sig', {fixity: aux}))
         .then(decls => typecheck(decls, context))
         .then(res => {
           let [{declName, term, type}] = res;
-          if (declName === 'sig') Object.assign(jsTerm, {type: term, print: print(term), result: quote(evaluate(term, context)) });
+          if (declName === 'sig') Object.assign(jsSig, {type: term, print: print(term), result: quote(evaluate(term, context)) });
           ready = true;
           unwait('sig', name)
         }));
@@ -243,13 +243,13 @@ var Reason = (options = {}) => {
     }
   }
 
-  class Def { // TODO: pull builtins from Data definitions somehow
-    constructor (nameString, declStrings, builtins = {}) {
+  class Def { // TODO: pull converters from Data definitions somehow
+    constructor (nameString, declStrings, converters = {}) {
       let [name, aux] = nameString.match(/^(([a-zA-Z][a-zA-Z0-9]*[\']*)\s.*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r)[\d]{1,3}))?$/).slice(1).filter(Boolean);
       wait('def', name);
-      let ready = false, { toString, ...tBuiltins } = builtins, jsTerm = { ...tBuiltins, appliedTerms: [] };
+      let ready = false, { toString, ...tConverters } = converters, jsTerm = { ...tConverters, appliedTerms: [] };
       if (typeof declStrings === 'string') {
-        // Def(name, sigdef, { ...builtins })
+        // Def(name, sigdef, { ...converters })
         sequence(() => tokenise({name, sourceString: declStrings})
           .then(lex => parse(lex, 'def'))
           .then(decls => typecheck(decls, context))
@@ -263,7 +263,7 @@ var Reason = (options = {}) => {
             unwait('def', name)
           }));
       } else if (Array.prototype.isPrototypeOf(declStrings)) {
-        // Def(name, [pats], { ...builtins })
+        // Def(name, [pats], { ...converters })
         sequence(() => declStrings.reduce((p, lex) => p
           .then(acc => tokenise({name, sourceString: declString})
             .then(lex => parse(lex, 'pat'))
@@ -280,7 +280,7 @@ var Reason = (options = {}) => {
             unwait('def', name)
           })
       } else {
-        // Def(name, { case: [pats] }, { ...builtins })
+        // Def(name, { case: [pats] }, { ...converters })
         let e = Object.entries(declStrings);
         if (e.length !== 1) error.malf('definition');
         let [caseDef, pats] = e[0];
@@ -317,12 +317,12 @@ var Reason = (options = {}) => {
               unwait('data', fresh);
             })
           }
-          jsApTerm = Object.assign((...args) => curry(jsApTerm, args), { ...jsApTerm, toString: () => `<${name}>` });
+          jsApTerm = Object.assign({[name]: (...args) => curry(jsApTerm, args)}[name], { ...jsApTerm, toString: () => `<${name}>` });
           Object.defineProperty(jsApTerm, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsApTerm) } });
           return jsApTerm
-        } else error.unchecked()
+        } else error.unchecked(name)
       };
-      jsTerm = Object.assign((...args) => curry(jsTerm, args), { ...jsTerm, toString: () => `<${name}>` });
+      jsTerm = Object.assign({[name]: (...args) => curry(jsTerm, args)}[name], { ...jsTerm, toString: () => `<${name}>` });
       Object.defineProperty(jsTerm, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsTerm) } });
       return jsTerm
     }
