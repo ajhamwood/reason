@@ -217,9 +217,9 @@ var Reason = (options = {}) => {
           return jsTyTerm
         } else error.unchecked(name)
       };
-      jsTerm = Object.assign({[name]: (...typeArgs) => curry(jsTerm, typeArgs)}[name], jsTerm);
-      Object.defineProperty(jsTerm, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsTerm) } });
-      return jsTerm
+      let ret = {[name]: (...typeArgs) => curry(jsTerm, typeArgs)}[name]
+      Object.defineProperty(ret, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => ret) } });
+      return ret
     }
   }
 
@@ -247,7 +247,7 @@ var Reason = (options = {}) => {
     constructor (nameString, declStrings, converters = {}) {
       let [name, aux] = nameString.match(/^(([a-zA-Z][a-zA-Z0-9]*[\']*)\s.*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r)[\d]{1,3}))?$/).slice(1).filter(Boolean);
       wait('def', name);
-      let ready = false, { toString, ...tConverters } = converters, jsTerm = { ...tConverters, appliedTerms: [] };
+      let ready = false, { toString, ...tConverters } = converters, jsTerm = Object.assign({ toString: () => `<${name}>` }, { ...tConverters, appliedTerms: [] });
       if (typeof declStrings === 'string') {
         // Def(name, sigdef, { ...converters })
         sequence(() => tokenise({name, sourceString: declStrings})
@@ -303,7 +303,7 @@ var Reason = (options = {}) => {
       }
       let curry = function (outerFn, fnArgs) {
         if (ready) {
-          let jsApTerm = { appliedTerms: outerFn.appliedTerms.concat(fnArgs) };
+          let jsApTerm = { appliedTerms: outerFn.appliedTerms.concat(fnArgs), toString: () => `<${name}>` };
           if (fnArgs.length) {
             let term = jsApTerm.appliedTerms.reduce((a, arg) => new Term({app: [a, arg.term, false]}), new Term({freevar: [ new Name({global: [name]}) ]})),
                 fresh = parser.fresh();
@@ -317,12 +317,12 @@ var Reason = (options = {}) => {
               unwait('data', fresh);
             })
           }
-          jsApTerm = Object.assign({[name]: (...args) => curry(jsApTerm, args)}[name], { ...jsApTerm, toString: () => `<${name}>` });
+          jsApTerm = Object.assign({[name]: (...args) => curry(jsApTerm, args)}[name], jsApTerm);
           Object.defineProperty(jsApTerm, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsApTerm) } });
           return jsApTerm
         } else error.unchecked(name)
       };
-      jsTerm = Object.assign({[name]: (...args) => curry(jsTerm, args)}[name], { ...jsTerm, toString: () => `<${name}>` });
+      jsTerm = {[name]: (...typeArgs) => curry(jsTerm, typeArgs)}[name]; // TODO: assign properties to def()
       Object.defineProperty(jsTerm, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsTerm) } });
       return jsTerm
     }
