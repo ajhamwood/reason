@@ -105,7 +105,12 @@
       --border: .4rem;
       padding: var(--border);
       margin: calc(- var(--border)) }
-    blockquote {}
+    blockquote {
+      display: flex;
+      background: #fff2;
+      font-family: 'univers';
+      font-variant-ligatures: none;
+      padding: .4rem }
   </style>
   <script src='reason.js' defer></script>
   <script src='machine.js'></script>
@@ -162,7 +167,8 @@
           #log {
             font-family: 'univers';
             font-variant-ligatures: none;
-            overflow-y: auto }
+            overflow-y: auto;
+            word-break: break-all }
           button {
             position: absolute;
             top: 10px;
@@ -189,7 +195,14 @@
                 logDiv.childNodes.length && logDiv.appendChild(document.createElement('hr'));
                 logDiv.appendChild(document.createTextNode(args.join(' '))) };
           new MutationObserver(adjustHeight).observe(sourceTextbox, { attributes: true, attributeFilter: [ "style" ] });
-          runButton.addEventListener('click', () => eval(`(async () => { let R = Reason(); ${sourceTextbox.value} })().catch(e => log(e.message))`))
+          runButton.addEventListener('click', () => eval(
+            `(async () => {` +
+            `  let R = Reason();` +
+            `  ${sourceTextbox.value}` +
+            `})()` +
+            `  .catch(e => log(e.message))` +
+            `  .then(() => document.getElementById('log').scrollTo(0, 1e6))`
+          ))
         </script>
       </body>
     </html
@@ -201,30 +214,92 @@
   ></template>
   <script>
 // Page state
-// ['', [], [].join('\n'), true]
+// [[], [].join('\n'), true]
 var app = new $.Machine({
   sections: [
     [['#Are you sure about that?#',
 
-      `A sentiment expressed so well by the great Jonathan Cena, uncertainty is something that touches all of us. Contrary to what some may think, a computer program won't help you separate reality from fiction when it comes to affairs of heart, or of society at large, but a little boost of confidence in regards to things doing what they say on the label wouldn't go astray in this fast-paced modern world. I'm not about to tell you dependent types or formal verification will spell the end of test driven development, nor that my little summer project to write a programming language in Javascript is fit for use in anything more your own fun side projects. But if someone told you that there was a system within which the properties of a program written on the label were mathematically guaranteed to be true, that would make you want to see for yourself, wouldn't it?`,
+      `A sentiment expressed so well by the great Jonathan Cena, uncertainty is something that touches all of us. Contrary to what some may think, a computer program won't help you separate reality from fiction when it comes to affairs of heart, or of society at large, but a little boost of confidence in regards to things doing what they say on the label wouldn't go astray in this fast-paced modern world. I'm not about to tell you dependent types or formal verification will spell the end of test driven development, nor that my little summer project to write a programming language in Javascript is fit for use in anything other than your own fun side projects. But if someone told you that there was a system within which the properties of a program written on the label were mathematically guaranteed to be true, that would make you want to see for yourself, wouldn't it?`,
 
       `So without further ado, I would like to introduce reason.js, an interpreter for my language, which has some nifty features I'm kind of proud of, as well as some others that are still works in progress. I have also included little Javascript sandboxes in each section so you can experiment with using features for yourself. Edit the source code in the upper half, then click run to see the results in the lower half. You can also move the divider up and down (the handle is on the right). Try it!`
     ], [
-      `log('Welcome to my TED talk')`
+      `let identity = new R.Def(`,
+      `  "id", "({t}, x => x) : {T : Type} -> T -> T"`,
+      `);`,
+      ``,
+      `await R.ready;`,
+      ``,
+      `log(identity.print);`,
+      `log(identity.type.print())`
     ].join('\n'), true
     ], [[
-      `#Managing expectations#`,
-
-      `Right off the bat, there are still some serious limitations with the current state of the project. Some of the most serious are a lack of strings and decimal numbers. While I have plans to incorporate at a later date things like these which seem absolutely mandatory in any programming language, the difficulty cuts to the heart of what this is all about. In a bog-standard programming language such as Javascript, if you want to use a string you might write \`\`let myString = 'sup';\`\`, and be good to go. But what if you want to make statements //about// the string? Or, about //strings// in general?`,
-
-      `You might go, \`\`let myStrLen = myString.length;\`\`, and sure, this will give you a value of 3, which is the length of \`\`myString\`\`. But who is making these decisions? We're all just hoping that the person who programmed the \`\`length\`\` property made sure it was an integer, never negative, not off-by-one, and so on. You might call length a million times and get correct results every time, without ever discovering that if you call it on the string "never gonna give you up", the developer left an easter egg to print the entire lyrics to the console.`,
-
-      `This has always been the allure of functional languages such as Scala, Haskell, or OCaml - only certain //types// are allowed to print to console, or return numerical values, or operate on any kind of value as long as it's a stream of them. Types have a rich mathematical structure that allows them to take on any form you care to come up with - however, types are limited by the language you use. Javascript is infamous for playing fast and loose with type coercion (try evaluating \`\`[[][[]]+[]][+[]][-~[]]\`\` for example, but there are a million more), so sometimes you just can't know if the \`\`false\`\` your function received is really a false, or whether it was an \`\`undefined\`\` or a \`\`null\`\` in a previous life.`,
-
-      `So, if I want to define a type of strings, what do I need to know? Well, to oversimplify, a string can be encoded as a list of chunks of 8 binary digits. So now we need to define both binary digits, chunks of 8 of them, and lists of chunks.`,
-
-      `... where am I going with this`
-    ], [].join('\n'), false]
+        `#Installation#`,
+        `It's in the books to publish reason.js to npm, but for now you can simply clone master:`,
+        `>$ git clone --depth 1 -b master https://github.com/ajhamwood/reason`,
+        `If you now include the file \`\`reason.js\`\` in the root directory in your project, you will be able to access the interpreter by calling \`\`const R = Reason()\`\`.`
+    ], [].join('\n'), false
+    ], [[
+      `#Objection!#`,
+      ``,
+      `The workhorse of reason.js are the methods \`\`Sig\`\`, \`\`Def\`\` and \`\`Data\`\` on the object you just initialised. They can be used to initialise types, type constructors, type signatures, and functions, which are all you need to access the full power of dependent types.`,
+      ``,
+      `Let's start off with \`\`Def\`\`, which creates term definitions. The identity function for example can be encoded likewise:`,
+      ``,
+      `>let identity = new R.Def("id", "(t, x => x) : (T : Type) -> T -> T");`,
+      ``,
+      `Let's break that down. The string argument encodes the term that will be interpreted, checked that it conforms to the typing rules of the language, and then attached to the Javascript class being instantiated. The actual syntax will be described later on; for now, we will focus on the Javascript. Although this example will return near-instantaneously, some type checks may be more computationally intensive to run. To deal with this, the \`\`identity\`\` object initially has only four properties of note: \`\`appliedTerms\`\`, \`\`toString\`\`, and \`\`ready\`\` and \`\`name\`\` (\`\`length\`\` is a property on all JS functions). Here we are interested in that last one: it returns a promise containing the typechecked object. So, if you run the following code within an \`\`async\`\` function, the results will be available immediately afterwards:`,
+      ``,
+      `>let identity = await new R.Def("id", "(t, x => x) : (T : Type) -> T -> T").ready;`,
+      ``,
+      `For convenience, the reason.js object also has this property, so you can call \`\`await R.ready;\`\` to pause at any moment until the typecheck has completed.`,
+      ``,
+      `This time, we get four additional properties: \`\`type\`\`, \`\`term\`\`, \`\`print\`\`, and \`\`result\`\`, and we are now ready to consider the API on term definitions as a whole.`
+    ], [
+      `let identity = new R.Def(`,
+      `  "id", "(t, x => x) : (T : Type) -> T -> T"`,
+      `);`,
+      ``,
+      `log(Object.getOwnPropertyNames(identity));`,
+      ``,
+      `await R.ready;`,
+      ``,
+      `log(Object.getOwnPropertyNames(identity))`
+    ].join('\n'), true
+    ], [[
+      `#The term definition API#`,
+      ``,
+      `First, let's look at the immediately available properties.`,
+      ``,
+      `\`\`ready\`\` we have already seen. It returns a \`\`Promise\`\` containing the asynchronously-available term object.`,
+      ``,
+      `\`\`name\`\` is an easy one: this is the identifier the term has been declared as. In the above example, its value would be \`\`"id"\`\`.`,
+      ``,
+      `In our example, \`\`appliedTerms\`\` would return an empty list. However as the name suggests, if you were to //apply// terms to a typechecked function, the results would be available here. We could even apply id to itself, like so:`,
+      ``,
+      `>let idType = new R.Def("idType", "((T : Type) -> T -> T) : Type");`,
+      ``,
+      `>let idid = identity(idType, identity);`,
+      ``,
+      `You would then find \`\`appliedTerms\`\` to be equal to \`\`[ idType, identity ]\`\`. However, if you used the in-page sandbox for this section, the log would instead display \`\`<idT>,<id>\`\`. This is because the \`\`toString\`\` function on terms returns the supplied term name within angle brackets by default. In the section on converters, we will cover how to define your own string coercion function, but for now you can consider it as almost the same as \`\`name\`\`.`,
+      ``,
+      `Now for the asynchronously available properties.`,
+      ``,
+      `\`\`print\`\` returns a string representing the term. It should be quite similar to the expression you supplied on instantiation, but the variables will be renamed to generic x's, y's and z's. (There may still be some printing bugs for me to squash, please report it if you find one!)`,
+      ``,
+      `\`\`term\`\` and \`\`type\`\` contain the internal representation of the typechecked term and type respectively. You may not find much use for them yet, but it might be interesting to execute their \`\`toString\`\` methods!`,
+      ``,
+      `Finally, \`\`result\`\` contains the result of evaluating the term. Comparing \`\`idid.print\`\` and \`\`idid.result.print()\`\` will illustrate the work the typechecker actually performed on the supplied term.`
+    ], [
+      `let identity = new R.Def(`,
+      `      "id", "(t, x => x) : (T : Type) -> T -> T"`,
+      `    ),`,
+      `    idType = await new R.Def(`,
+      `      "idT", "((T : Type) -> T -> T) : Type"`,
+      `    ).ready,`,
+      `    idid = await identity(idType, identity).ready;`,
+      ``,
+      `log(idid.result.print())`
+    ].join('\n'), true]
   ]
 });
 
