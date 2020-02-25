@@ -194,7 +194,7 @@ var Reason = (options = {}) => {
             }, cConverters)
           });
           // Initialise a type
-          if (typeArgs.length) {
+          if (typeArgs.length) { // TODO: Does the type constructor on no arguments return immediately as it's supposed to?
             // Initialise a type, with parameters
             params.forEach((param, i) => fromJSThis[(param[0][0][0] + '').toLowerCase()] = jsTyTerm.appliedTerms[i]);
             let fresh = parser.fresh();
@@ -881,8 +881,8 @@ var Reason = (options = {}) => {
             ))
 
           // f a b... : term
-          case 'ann': return altMsg('Try Annotation', () => parseTerm(env, 'ctor'))
-            .catch(() => alt(() => parseTerm(env, 'app')).then(annot))
+          case 'ann': return altMsg('Try Annotation', () => parseTerm(env, 'ctor')
+            .catch(() => alt(() => parseTerm(env, 'app'))).then(annot))
             // (a * b) : term
             .catch(() => enclosure(['parens'], () => mixfix(env)).then(annot))
             // (lam) : term
@@ -908,7 +908,7 @@ var Reason = (options = {}) => {
             })()
               .catch(() => new Term({[ctor]: [ new Name({global: [name]}),
                 ts.map((x, i) => ctor === 'tcon' ? x : new Arg({arg: [ x, eps[i] ]})) ]}))
-              .then(tm => mixfix(env, tm).catch(() => tm))
+              .then(tm => alt(() => mixfix(env, tm)).catch(() => tm))
           })
 
           case 'app': return enclosure(['parens'], () => lambda(env))
@@ -945,7 +945,7 @@ var Reason = (options = {}) => {
               let i = env.findIndex(bv => bv.id === name);
               return ~i ? new Term({boundvar: [i]}) : new Term({freevar: [ new Name({global: [name]}) ]})
             })) // x _*...
-            .then(tm => mixfix(env, tm).catch(() => tm))
+            .then(tm => alt(() => mixfix(env, tm)).catch(() => tm))
              // c... *or* t...
             .catch(() => alt(() => parseTerm(env, 'ctor')))
              // (pi)

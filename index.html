@@ -195,14 +195,15 @@
                 logDiv.childNodes.length && logDiv.appendChild(document.createElement('hr'));
                 logDiv.appendChild(document.createTextNode(args.join(' '))) };
           new MutationObserver(adjustHeight).observe(sourceTextbox, { attributes: true, attributeFilter: [ "style" ] });
-          runButton.addEventListener('click', () => eval(
-            `(async () => {` +
-            `  let R = Reason();` +
-            `  ${sourceTextbox.value}` +
-            `})()` +
-            `  .catch(e => log(e.message))` +
-            `  .then(() => document.getElementById('log').scrollTo(0, 1e6))`
-          ))
+          runButton.addEventListener('click', () => Promise.resolve()
+            .then(() => eval(
+              `(async () => {` +
+              `  let R = Reason();` +
+              `  ${sourceTextbox.value}` +
+              `})()` +
+              `  .catch(e => log(e.message))` +
+              `  .then(() => document.getElementById('log').scrollTo(0, 1e6))`))
+            .catch(e => log(e.message)))
         </script>
       </body>
     </html
@@ -214,15 +215,15 @@
   ></template>
   <script>
 // Page state
-// [[], [].join('\n'), true]
 var app = new $.Machine({
   sections: [
-    [['#Are you sure about that?#',
-
+    [[
+      `#Are you sure about that?#`,
+      ``,
       `A sentiment expressed so well by the great Jonathan Cena, uncertainty is something that touches all of us. Contrary to what some may think, a computer program won't help you separate reality from fiction when it comes to affairs of heart, or of society at large, but a little boost of confidence in regards to things doing what they say on the label wouldn't go astray in this fast-paced modern world. I'm not about to tell you dependent types or formal verification will spell the end of test driven development, nor that my little summer project to write a programming language in Javascript is fit for use in anything other than your own fun side projects. But if someone told you that there was a system within which the properties of a program written on the label were mathematically guaranteed to be true, that would make you want to see for yourself, wouldn't it?`,
-
+      ``,
       `So without further ado, I would like to introduce reason.js, an interpreter for my language, which has some nifty features I'm kind of proud of, as well as some others that are still works in progress. I have also included little Javascript sandboxes in each section so you can experiment with using features for yourself. Edit the source code in the upper half, then click run to see the results in the lower half. You can also move the divider up and down (the handle is on the right). Try it!`
-    ], [
+    ].join('\n'), [
       `let identity = new R.Def(`,
       `  "id", "({t}, x => x) : {T : Type} -> T -> T"`,
       `);`,
@@ -234,10 +235,13 @@ var app = new $.Machine({
     ].join('\n'), true
     ], [[
         `#Installation#`,
+        ``,
         `It's in the books to publish reason.js to npm, but for now you can simply clone master:`,
+        ``,
         `>$ git clone --depth 1 -b master https://github.com/ajhamwood/reason`,
+        ``,
         `If you now include the file \`\`reason.js\`\` in the root directory in your project, you will be able to access the interpreter by calling \`\`const R = Reason()\`\`.`
-    ], [].join('\n'), false
+    ].join('\n'), [].join('\n'), false
     ], [[
       `#Interpreter#`,
       ``,
@@ -245,16 +249,20 @@ var app = new $.Machine({
       ``,
       `Let's start off with \`\`Def\`\`, which creates term definitions. The identity function for example can be encoded likewise:`,
       ``,
-      `>let identity = new R.Def("id", "(t, x => x) : (T : Type) -> T -> T");`,
+      `>let identity = new R.Def(`,
+      `>  "id", "(t, x => x) : (T : Type) -> T -> T"`,
+      `>);`,
       ``,
       `Let's break that down. The string argument encodes the term that will be interpreted, checked that it conforms to the typing rules of the language, and then attached to the Javascript class being instantiated. The actual syntax will be described later on; for now, we will focus on the Javascript. Although this example will return near-instantaneously, some type checks may be more computationally intensive to run. To deal with this, the \`\`identity\`\` object initially has only four properties of note: \`\`appliedTerms\`\`, \`\`toString\`\`, and \`\`ready\`\` and \`\`name\`\` (\`\`length\`\` is a property on all JS functions). Here we are interested in that last one: it returns a promise containing the typechecked object. So, if you run the following code within an \`\`async\`\` function, the results will be available immediately afterwards:`,
       ``,
-      `>let identity = await new R.Def("id", "(t, x => x) : (T : Type) -> T -> T").ready;`,
+      `>let identity = await new R.Def(`,
+      `>  "id", "(t, x => x) : (T : Type) -> T -> T"`,
+      `>).ready;`,
       ``,
       `For convenience, the reason.js object also has this property, so you can call \`\`await R.ready;\`\` to pause at any moment until the typecheck has completed.`,
       ``,
       `This time, we get four additional properties: \`\`type\`\`, \`\`term\`\`, \`\`print\`\`, and \`\`result\`\`, and we are now ready to consider the API on term definitions as a whole.`
-    ], [
+    ].join('\n'), [
       `let identity = new R.Def(`,
       `  "id", "(t, x => x) : (T : Type) -> T -> T"`,
       `);`,
@@ -276,9 +284,10 @@ var app = new $.Machine({
       ``,
       `In our example, \`\`appliedTerms\`\` would return an empty list. However as the name suggests, if you were to //apply// terms to a typechecked function, the results would be available here. We could even apply id to itself, like so:`,
       ``,
-      `>let idType = new R.Def("idType", "((T : Type) -> T -> T) : Type");`,
-      ``,
-      `>let idid = identity(idType, identity);`,
+      `>let idType = new R.Def(`,
+      `>      "idType", "((T : Type) -> T -> T) : Type"`,
+      `>    ),`,
+      `>    idid = identity(idType, identity);`,
       ``,
       `You would then find \`\`appliedTerms\`\` to be equal to \`\`[ idType, identity ]\`\`. However, if you used the in-page sandbox for this section, the log would instead display \`\`<idT>,<id>\`\`. This is because the \`\`toString\`\` function on terms returns the supplied term name within angle brackets by default. In the section on converters, we will cover how to define your own string coercion function, but for now you can consider it as almost the same as \`\`name\`\`.`,
       ``,
@@ -289,7 +298,7 @@ var app = new $.Machine({
       `\`\`term\`\` and \`\`type\`\` contain the internal representation of the typechecked term and type respectively. You may not find much use for them yet, but it might be interesting to execute their \`\`toString\`\` methods!`,
       ``,
       `Finally, \`\`result\`\` contains the result of evaluating the term. Comparing \`\`idid.print\`\` and \`\`idid.result.print()\`\` will illustrate the work the typechecker actually performed on the supplied term.`
-    ], [
+    ].join('\n'), [
       `let identity = new R.Def(`,
       `      "id", "(t, x => x) : (T : Type) -> T -> T"`,
       `    ),`,
@@ -307,10 +316,12 @@ var app = new $.Machine({
       ``,
       `To declare the signature part of our definition on its own, we can write:`,
       ``,
-      `>let identity = new R.Sig("id", "(T : Type) -> T -> T");`,
+      `>let identity = new R.Sig(`,
+      `>  "id", "(T : Type) -> T -> T"`,
+      `>);`,
       ``,
       `Now if we have a look at the properties, we get \`\`Def\`\`, \`\`name\`\` and \`\`ready\`\`  available immediately, and \`\`type\`\`, \`\`print\`\` and \`\`result\`\` available asynchronously. This is different to what we had for term definitions: the \`\`term\`\` property is missing for obvious reasons, and since it is a signature, it cannot be applied and thus we don't need \`\`appliedTerms\`\` (the jury is still out on whether I will add \`\`toString\`\` later on). The new \`\`Def\`\` property is suggestive, and as you might guess, it is used to chain a term definition to our signature object. We will look at it in more detail a little later, when we have some more interesting terms at our disposal.`
-    ], [
+    ].join('\n'), [
       `let identity = new R.Sig(`,
       `  "id", "(T : Type) -> T -> T"`,
       `);`,
@@ -321,38 +332,209 @@ var app = new $.Machine({
       ``,
       `log(Object.getOwnPropertyNames(identity))`
     ].join('\n'), true
+    ], [[
+      `#Data definitions#`,
+      ``,
+      `As you may be beginning to realise, there is only so far we can go with function terms. Or, I should rephrase, want to go. As Church's famous theorem tells us, if we have functions, we can encode pretty much any mathematical structure we like. Unfortunately, Church encodings of even basic things like numbers or Booleans are highly unwieldy, and we already have types available. So let us now define our first real type:`,
+      ``,
+      `>let Void = new R.Data("Void", "Type", []);`,
+      ``,
+      `It's... not much. This type corresponds to the bottom type **⊥** in type theory, and is characterised as a type without any terms. We can see that it has a name field, a type field, as well as something new as an empty array. This something new is necessary because types are potentially //constructible//, so we need to be able to define the ways in which they can be constructed. The simplest constructible type, corresponding to the top type **⊤**, can be defined like this:`,
+      ``,
+      `>let Unit = new R.Data(`,
+      `>      "Unit", "Type",`,
+      `>      [ "TT : Unit" ]`,
+      `>    );`,
+      ``,
+      `In the list of constructors, we now have a the single constructor \`\`TT\`\` often seen represented as **()**, with a type annotation that says it is of type \`\`Unit\`\`. While you might guess that type constructors always have the type of the type constructor, that is not always the case, as we will see in the section on indexed types.`,
+      ``,
+      `If we have a look at the properties on the object, this time they aren't as helpful: just \`\`name\`\` and \`\`ready\`\`. So, how do we use it? Conceptually, both type constructors and term constructors can be formed using zero or more arguments, so in that sense they are like functions. Thus in Javascript we also instantiate our usable typed objects from the \`\`Data\`\` class by executing them, like so: \`\`Unit()\`\`. Now if we view the properties after waiting for typecheck, we find a bunch more: on \`\`Void()\`\` we have the familiar \`\`appliedTerms\`\`, \`\`type\`\`, \`\`term\`\`, \`\`print\`\` and \`\`toString\`\`, along with a new method \`\`fromJS\`\`, and on \`\`Unit()\`\` we also have a property generated from our data definition: \`\`tt\`\`. \`\`fromJS\`\` is a coercion method which will be explored later, so for now let's look at \`\`tt\`\`.`,
+      ``,
+      `The unapplied object has even less properties now, missing \`\`ready\`\` because if we have access to \`\`tt\`\` the type constructor has already been typechecked. The asynchronous object is now missing \`\`tt\`\` and \`\`fromJS\`\`, but has gained a new property \`\`result\`\` which were are familiar with already.`,
+      ``,
+      `With the API now sorted, we can turn our attention to the star attraction: the expression syntax.`
+    ].join('\n'), [
+      `let Void = new R.Data("Void", "Type", []),`,
+      `    Unit = new R.Data("Unit", "Type", [ "TT : Unit" ]);`,
+      ``,
+      `log(Object.getOwnPropertyNames(Void));`,
+      `log(Object.getOwnPropertyNames(Unit));`,
+      ``,
+      `await R.ready;`,
+      ``,
+      `log(Object.getOwnPropertyNames(Void()));`,
+      `log(Object.getOwnPropertyNames(Unit()));`,
+      `log(Object.getOwnPropertyNames(Unit().tt()))`
+    ].join('\n'), true
+    ],[[
+      `#Expressions#`,
+      ``,
+      `Since our identity function example is starting to wear a little thin, let's define a new, highly useful type that appears just about everywhere: the natural numbers. To be precise, these are the peano numerals, otherwise known as unary numbers.`,
+      ``,
+      `>let Nat = new R.Data(`,
+      `>  "Nat", "Type",`,
+      `>  [ "Z : Nat",`,
+      `>    "S : (n : Nat) -> Nat" ]`,
+      `>);`,
+      ``,
+      `In unary, numbers are defined by how many successors have been applied starting with zero. So for example the number three would be encoded as **S S S Z**. From our earlier \`\`Unit\`\` example, we can surmise that this type has two constructors, \`\`Z\`\` and \`\`S\`\` (which stand for zero and successor), and that \`\`Z : Nat\`\` should work like \`\`TT : Unit\`\`. But what is that arrow in the definition for \`\`S\`\`?`,
+      ``,
+      `The //dependent// part of dependent types (also known as //pi// types) refers to types which depend on terms found earlier. Just like the type variable \`\`T\`\` found in the identity function type, the \`\`n\`\` in the definition of \`\`S\`\` is allowed to appear freely to the right within that type term. So we can say that \`\`(n : Nat) -> Nat\`\` is a type term. What does it mean to be "to the right"? That's simple enough: it means anywhere after the next \`\`->\`\`. Finally, to answer what an arrow is for: it defines the type of a //function//. \`\`Nat -> Nat\`\` is then the type of all functions which take a \`\`Nat\`\` as an argument, and return a \`\`Nat\`\`. Note that it isn't only the type of \`\`S\`\`. It's the type of all such functions.`,
+      ``,
+      `So now that we know how to make the type of a function, what does a function look like? We saw one already, but let's define a new one using our \`\`Nat\`\` type: a function which adds two.`,
+      ``,
+      `>let addTwo = new R.Sig(`,
+      `>  "addTwo", "Nat -> Nat" ).Def(`,
+      `>    "n => S (S n)"`,
+      `>);`,
+      ``,
+      `Now we have a new arrow: \`\`=>\`\`. This expresses a //lambda// function, which takes a single argument denoted by the identifier immediately to the left (\`\`n\`\` here), and returns a term according to the expression to the right. So, if the value of \`\`n\`\` is \`\`S Z\`\`,  this lambda will return \`\`S (S (S Z))\`\`. And indeed, 1 + 2 = 3.`,
+      ``,
+      `Now, you may be wondering what happens if you have a function which takes more than one argument? Well as it turns out, any such function can be converted into a series of nested functions, each of which consumes an argument and returns a function on one less argument. This is known as currying, after mathematician Haskell Curry. As a shorthand, you can write a lambda expression on many arguments by separating the bound variables with a comma, like so: \`\`x, y => x\`\`. Similarly in pi expressions, all but the final  arrow can be elided, however the bound variable must be identified: \`\`(x : A)(y : B) -> A\`\`.`
+    ].join('\n'), [
+      `let Nat = new R.Data(`,
+      `  "Nat", "Type",`,
+      `  [ "Z : Nat",`,
+      `    "S : (n : Nat) -> Nat" ]`,
+      `);`,
+      ``,
+      `let addTwo = new R.Sig(`,
+      `  "addTwo", "Nat -> Nat" ).Def(`,
+      `    "n => S (S n)"`,
+      `);`,
+      ``,
+      `let one = new R.Def("one", "(S Z) : Nat");`,
+      ``,
+      `await R.ready;`,
+      ``,
+      `log(addTwo.print)`,
+      `log(one.print);`,
+      `log((await addTwo(one).ready).result.print())`
+    ].join('\n'), true
+    ], [[
+      `#Converters#`,
+      ``,
+      `In Javascript, it is possible to define a default way that an object may be converted to both \`\`Number\`\` and \`\`String\`\` types: these are the \`\`valueOf\`\` and \`\`toString\`\` methods, respectively. In reason.js, the ability exists to define conversion of terms of any type to and from these or any other Javascript type. We have seen the default \`\`toString\`\` method on function terms with \`\`identity\`\` and datatype terms with \`\`Unit\`\`. Let's now have a go at defining our own coercion methods on Booleans:`,
+      ``,
+      `>let Boolean = new R.Data(`,
+      `>      "Bool", "Type",`,
+      `>      [ { "F : Bool": {} },`,
+      `>        { "T : Bool": {} } ],`,
+      `>      {}`,
+      `>    );`,
+      ``,
+      `Even though this is only a skeleton for placing the coercion methods, right off the bat the arguments look different to before. Instead of an array of term constructor expression strings, the strings are now keys each in their own hash, with their value another hash. Well, as you might have guessed, this is where the methods on those constructors will go. Specifically, methods will be taken from here and used to convert reason.js terms to Javascript. Conversely, methods defined in that new hash argument at the end will be used to convert Javascript values to reason.js terms.`,
+      ``,
+      `In the case of Booleans, there is one clear strategy we can take: Javascript \`\`true\`\` can map to the term named \`\`T\`\`, and \`\`false\`\` to \`\`F\`\`. Let's start with the to-Javascript direction, using \`\`valueOf\`\` since \`\`true\`\` and \`\`1\`\`, etc., are pretty interchangeable in Javascript. In the case of \`\`F\`\` we could write the hash entry as \`\`valueOf: () => true\`\`, with something similar for \`\`false\`\`. In the opposite direction, we use the key \`\`fromJS\`\` and define a function taking a true-or-falsey value and returning a typed Bool object. Putting it all together, we have:`,
+      ``,
+      `>let Bool = new R.Data(`,
+      `>      "Bool", "Type",`,
+      `>      [ { "F : Bool": { valueOf: () => false } },`,
+      `>        { "T : Bool": { valueOf: () => true } } ],`,
+      `>      { fromJS: value => Bool()[value ? 't' : 'f']() }`,
+      `>    );`,
+      ``,
+      `This is not the whole story on coercion; we will revisit them when we describe the special requirements for coercing to and from parametrised types in the next section.`
+    ].join('\n'), [
+      `let Bool = await new R.Data(
+      "Bool", "Type",`,
+      `      [ { "F : Bool": { valueOf: () => false } },`,
+      `        { "T : Bool": { valueOf: () => true } } ],`,
+      `      { fromJS: value => Bool()[value ? 't' : 'f']() }`,
+      `    ).ready;`,
+      ``,
+      `log(Bool().fromJS([]).valueOf() && !Bool().fromJS('').valueOf())`
+    ].join('\n'), true
   ], [[
-    `#Data definitions#`,
+    `#Parametrised types#`,
     ``,
-    `As you may be beginning to realise, there is only so far we can go with function terms. Or, I should rephrase, want to go. As Church's famous theorem tells us, if we have functions, we can encode pretty much any mathematical structure we like. Unfortunately, Church encodings of even basic things like numbers or Booleans are highly unwieldy, and we already have types available. So let us now define our first real type:`,
+    `In the section on data definitions, we mentioned that constructors can form terms using zero or more arguments, but didn't actually give any examples. Here is where we rectify that by introducing parametrised types, which is the official name for types formed with arguments. The simplest and canonical example is probably quite familiar to you: it's a list. Let's look at the data definition:`,
     ``,
-    `>let void = new R.Data("Void", "Type", []);`,
+    `>let List = new R.Data(`,
+    `>      "List", "(A : Type) -> Type",`,
+    `>      [ "Nil : List A",`,
+    `>        "Cons : (x : A)(xs : List A) -> List A" ]`,
+    `>    );`,
     ``,
-    `It's... not much. This type corresponds to the bottom type ⊥ in type theory, and is characterised as a type without any terms. We can see that it has a name field, a type field, as well as something new as an empty array. This something new is necessary because types are potentially //constructible//, so we need to define the ways in which they can be constructed. The simplest constructible type, corresponding to the top type ⊤, can be defined like this:`,
+    `There is a little more going on here than there was for \`\`Nat\`\`, but let's break it down. This time, the type constructor is a pi expression. This is the essence of a parametrised type: terms are constructed concretely //using// terms of other types, but it's defined in a generalised way. Next we can see it has two term constructors, \`\`Nil\`\` and \`\`Cons\`\` (this nomenclature goes way back to lisp and beyond). The type of \`\`Nil\`\` is \`\`List A\`\`, but wait - where does it get the \`\`A\`\` from?`,
     ``,
-    `>let unit = new R.Data("Unit", "Type", [ "TT : Unit" ]);`
-  ], [
-    `let Void = new R.Data("Void", "Type", []),`,
-    `    Unit = new R.Data("Unit", "Type", [ "TT : Unit" ]);`,
+    `>let nilBool = new R.Def("nilBool", "Nil : List Bool");`,
     ``,
-    `log(Object.getOwnPropertyNames(Void));`,
-    `log(Object.getOwnPropertyNames(Unit));`,
+    `This example defines a list of \`\`Bool\`\` terms of zero length. Now, if you call a \`\`nilBool\`\`, it will know what kind of \`\`List\`\` it is because the parameter is there in the type signature. Still, why do we need to say what type of thing I have nothing of? Couldn't I just start adding terms on the end of any nil list? Well the answer to that hints at what makes strong typing so powerful: it limits what you can do in certain meaningful ways, so you can always work out what is supposed to go where, even if you have none right now. Anything could be added to the single kind of nil list Javascript has, \`\`[]\`\`, so often we need to extensively guard on incoming data - \`\`if (typeof value === "string") ...\`\`, blah blah blah. Strong typing obviates this class of cruft right out of the gate.`,
+    ``,
+    `Returning to the example, the other term constructor is \`\`Cons\`\` which appends terms of type \`\`A\`\` to the end of the list, so \`\`Cons Z (Cons (S Z) Nil) : List Nat\`\` would be equivalent to the Javascript array \`\`[1,0]\`\`. And speaking of equivalence, I promised a second part to coercion so let's look at that now.`,
+    ``,
+    `The issue with coercing to a parametrised type is that you may be able to construct for example the \`\`List\`\` part, but what about the \`\`A\`\`? We don't even know what type to construct. The solution here is to use the local scope and pull the necessary objects from \`\`this\`\`. In fact, for the reverse direction, we already had a problem coercing from recursive types like \`\`Nat\`\` to Javascript - questions like "what level of \`\`S\`\`s are we at right now?" can't be answered without some kind of state. So, let me give you one solution in the case of \`\`List\`\`:`,
+    ``,
+    `>let List = new R.Data(`,
+    `>      "List", "(A : Type) : Type",`,
+    `>      [ { "Nil : List A": { valueOf: () => [] } },`,
+    `>        { "Cons : (x : A)(xs : List A) -> List A":`,
+    `>          { valueOf () {`,
+    `>            return this[1].valueOf()`,
+    `>              .concat([ this[0].valueOf() ]) } }`,
+    `>        } ],`,
+    `>      { fromJS (value) {`,
+    `>        let p = () => value.length === 0 ?`,
+    `>              this.nil() :`,
+    `>              this.cons(this.a.fromJS(value.pop()), p()));`,
+    `>        return p() } }`,
+    `>    );`,
+    ``,
+    `To summarise, \`\`this\`\` when coercing from reason.js is the array \`\`appliedTerms\`\`, whereas when coercing to reason.js is a hash of the constructors plus the type parameters. Thanks to duplicate name checks at typecheck these names should not clash, but I may make the separation more clear cut at a later date.`
+  ].join('\n'), [
+    `let Bool = new R.Data(`,
+    `      "Bool", "Type",`,
+    `      [ { "F : Bool":`,
+    `          { toString: () => 'F',`,
+    `            valueOf: () => false } },`,
+    `        { "T : Bool":`,
+    `          { toString: () => 'T',`,
+    `            valueOf: () => true } } ],`,
+    `      { fromJS: value => Bool()[value ? 't' : 'f']() }`,
+    `    );`,
+    ``,
+    `let List = new R.Data(`,
+    `      "List", "(A : Type) : Type",`,
+    `      [ { "Nil : List A":`,
+    `          { toString: () => '[]',`,
+    `            valueOf: () => [] } },`,
+    `        { "Cons : (x : A)(xs : List A) -> List A":`,
+    `          { toString () {`,
+    `            return '[ ' + (this[1].name === "Cons" ?`,
+    `              this[0].toString() + ', ' +`,
+    `                this[1].toString().slice(2) :`,
+    `              this[0].toString() + ' ]') },`,
+    `            valueOf () {`,
+    `            return [ this[0].valueOf() ]`,
+    `              .concat(this[1].valueOf()) } }`,
+    `        } ],`,
+    `      { fromJS (value) {`,
+    `        let p = () => value.length === 0 ?`,
+    `              this.nil() :`,
+    `              this.cons(this.a.fromJS(value.shift()), p());`,
+    `        return p() } }`,
+    `    );`,
+    ``,
+    `let nilBool = new R.Def("nilBool", "Nil : List Bool");`,
     ``,
     `await R.ready;`,
     ``,
-    `log(Object.getOwnPropertyNames(Void()));`,
-    `log(Object.getOwnPropertyNames(Unit()));`
+    `let listBool = List(Bool());`,
+    `log(nilBool.print, "--", nilBool.type.print())`,
+    `log((await listBool.fromJS([true, false]).ready).toString())`
   ].join('\n'), true]
   ]
 });
+// [[].join('\n'), [].join('\n'), true]
 
 // Events
 $.targets({
   load () { app.emit('load-editors') },
   app: { 'load-editors' () {
-    this.sections.forEach(([ps, source, cutin]) => {
+    this.sections.forEach(([p, source, cutin]) => {
       let section = $.load('section', 'main')[0][0];
-      for (let p of ps) write(p, section);
+      write(p, section);
       if (typeof source === 'string' && source.length) {
         $('iframe', section)[0].srcdoc = $('template#editor')[0].innerHTML.replace(/\[\]/g, source);
         if (cutin) $('aside', section)[0].classList.add('cut-in');
@@ -365,7 +547,7 @@ $.targets({
 
 function write (raw, section) {
   //  **bold**  //italic//  ``monospaced``  [[link url]]  [[link url|link text]]
-  //  >quote (\>no quote)  ␣␣↵line break  ↵↵paragraph  #(#..)header#
+  //  >multiline quote (\>no quote)  ␣␣↵line break  ↵↵paragraph  #(#..)header#
   function escape (text) {
     var div = document.createElement("div");
     div.appendChild(document.createTextNode(text));
@@ -392,8 +574,11 @@ function write (raw, section) {
     .replace(/\[\[([^|]*)\|([^\]]*)\]\]/g, function ($0, $1, $2) { return "<a href='" + $1.replace(/'/g, "&apos;") + "'>" + $2 + "</a>" });
   for (var p = (newline === "" ? [r] : r.split(newline + newline)), i = 0; i < p.length; i++) {
     p[i] = p[i]
-      .replace(/^&gt;(.*)/g, "<blockquote>$1</blockquote>").replace(/^\\&gt;/g, "&gt;")
-      .replace(/^( +)/g, function (match) { return match.replace(/\s/g,"&nbsp;") });
+      .replace(/^(?:&gt;)?( +)/gm, function (match) { return match.replace(/\s/g,"&nbsp;") })
+      .split(newline)
+        .reduce((a, x, tmp) => (tmp = x.match(/^&gt;(.*)$/)) ? (a[0].push(tmp[1]), a) : a[0].length ? [[], x].concat(a) : [[], x].concat(a.slice(1)), [[]])
+        .reverse().map(arr => typeof arr === 'string' || !arr.length ? arr : `<blockquote>${arr.join('<br/>')}</blockquote>`).join(newline)
+      .replace(/^\\&gt;/g, "&gt;");
     p[i] = p[i].replace(/([\s\S]+)/g, "<p>$1</p>")
   }
   section.innerHTML += p.join(newline);
