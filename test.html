@@ -28,6 +28,34 @@
 
   let test;
 
+  // (async () => {
+  //   let Either = new R.Data(
+  //         "Either", "(A : Type)(B : Type) : Type",
+  //         [ "Right : (r : A) -> Either A B",
+  //           "Left : (l : B) -> Either A B" ]
+  //       ),
+  //       Unit = new R.Data(
+  //         "Unit", "Type",
+  //         [ "TT : Unit" ]
+  //       ),
+  //       Bool = new R.Data(
+  //         "Bool", "Type",
+  //         [ "F : Bool",
+  //           "T : Bool" ]
+  //       ),
+  //       ifThenElse = new R.Sig(
+  //         "if_then_else_", "{A B : Type} -> Bool -> A -> B -> Either A B"
+  //       ).Def({
+  //         "{A}{B} b x y | b":
+  //         [ "T := Right x", "F := Left y" ]
+  //       }),
+  //       partialIf = new R.Def(
+  //         "partialIf", "(if_then T else TT) : Bool -> Either Bool Unit"
+  //       )
+  //
+  //   console.log(partialIf.print);
+  // })();
+
   (async () => {
     let passFail = obj => {
       for (let test in obj) try { console.log(obj[test]()) }
@@ -37,10 +65,10 @@
     // functions, lambdas
     id1 = new R
       .Sig('id', '(T : Type) -> T -> T')
-      .Def('(t, x => x)');
+      .Def('(t , x => x)');
 
     // functions with builtins
-    id2 = new R.Def("id'", '({t}, x => x) : {T : Type} -> T -> T',
+    id2 = new R.Def("id'", '({t} , x => x) : {T : Type} -> T -> T',
       { toString () { return this[0].toString() },
       valueOf () { return this[0].valueOf() } }
     );
@@ -146,15 +174,42 @@
 
     console.log(`%csomeList =`, 'font-weight: bold; color: deeppink', someList.result.print());
 
+    // let concat = new R.Sig(
+    //   "_++_", "{A : Type} -> List A -> List A" ).Def({
+    //   "{A} xs ys | xs":
+    //   [ "Nil := ys",
+    //     "Cons a as := (++) {A} as (Cons a ys)" ] });
+
+    // let Either = new R.Data(
+    //       "Either", "(A : Type)(B : Type) : Type",
+    //       [ "Left : A -> Either A B",
+    //         "Right : B -> Either A B" ]
+    //     ),
+    //     Unit = new R.Data(
+    //       "Unit", "Type",
+    //       [ "TT : Unit" ]
+    //     ),
+    //     Bool = new R.Data(
+    //       "Bool", "Type",
+    //       [ "F : Bool",
+    //         "T : Bool" ]
+    //     ),
+    //     ifThenElse = await new R.Sig(
+    //       "if_then_else_", "{A B : Type} -> Bool -> A -> B -> Either A B"
+    //     ).Def({
+    //       "{A}{B} b x y | b":
+    //       [ "T := x", "F := y" ]
+    //     }).ready;
+
 
 
     Vec = new R.Data(
       "Vec", "(A : Type) : Nat -> Type",
       [ { "Nil : Vec A Z": { toString: () => '<>', valueOf: () => [] } },
         { "Cons : {n : Nat}(x : A)(xs : Vec A n) -> Vec A (S n)":
-          { toString () { return this[1].toString() + ' :: ' + this[0].toString() },
-            valueOf () { return this[1].valueOf().concat([this[0].valueOf()]) } } } ],
-      { fromJS (v) { let p = () => v.length ? this.cons(this.a.fromJS(v.pop()), p()) : this.nil(); return p() } } );
+          { toString () { return '< ' + (this[1].name === "Cons" ? this[0].toString() + ', ' + this[1].toString().slice(2) : this[0].toString() + ' >') },
+            valueOf () { return [ this[0].valueOf() ].concat(this[1].valueOf()) } } } ],
+      { fromJS (v) { let p = () => v.length ? this.cons(this.a.fromJS(v.shift()), p()) : this.nil(); return p() } } );
 
     tail = new R.Sig(
       "tail", "{A : Type}{m : Nat} -> Vec A (S m) -> Vec A m"
