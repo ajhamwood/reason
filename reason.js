@@ -43,7 +43,7 @@ var Reason = (options = {}) => {
             print_bad: val => `Print error: unprintable argument ${val}`,
 
             // Typechecking errors
-            tc_mismatch: (tested, given, term) => `Type error: mismatch at\n    ${print(tested)}\nexpecting\n    ${print(given)}${
+            tc_mismatch: (tested, given, term) => `Type error: mismatch at type\n    ${print(tested)}\nexpecting type\n    ${print(given)}${
               term ? `\nat term\n    ${print(term)}` : ''}`,
             tc_cannot_infer: which => `Type error: cannot infer type of ${which}`,
             tc_lam_mismatch: ctor => `Type error: lambda has Pi type, not ${ctor}`,
@@ -344,7 +344,7 @@ var Reason = (options = {}) => {
   }
 
   function tokenise ({name, sourceString}) {
-    let rx_token = /^((\s+)|([a-zA-Z][a-zA-Z0-9]*[\']*|_(?:\s|[(){}"]|$))|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)|(0|-?[1-9][0-9]*)|([(){}"]))(.*)$/,
+    let rx_token = /^((\s+)|([a-zA-Z][a-zA-Z0-9]*[\']*|_)(?=\s+|[(){}"]|$)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)|(0|-?[1-9][0-9]*)|([(){}"]))(.*)$/,
         rx_digits = /^([0-9]+)(.*)$/,
         rx_hexs = /^([0-9a-fA-F]+)(.*)$/,
         source = sourceString, tokens = name ? [{id: name, value: 'name'}] : [], index = 0, word, char;
@@ -499,7 +499,7 @@ var Reason = (options = {}) => {
         case 'star': return 'Type'
         case 'pi': return `${this[2] ? 'Erased ' : ''}Pi(${this[0].toString()}, ${this[1].toString()})`
         case 'lam': return `${this[1] ? 'Erased ' : ''}Lam(${this[0].toString()})`
-        case 'app': return `${this[0].toString()} :@: ${this[1].toString()}` // Erased App?
+        case 'app': return `${this[0].toString()} :@: ${this[2] ? 'Erased ' : ''}${this[1].toString()}`
         case 'boundvar': return `Bound ${this[0]}`
         case 'freevar': return `Free ${this[0]}`
         case 'tcon': return `TC:${this[0].toString()}${this[1].map(x => ` (${x.toString()})`).join('')}`
@@ -517,7 +517,7 @@ var Reason = (options = {}) => {
     }
     toString () {
       switch(this.ctor) {
-        case 'global': return typeof this[0] === 'number' ? '_' + this[0] : `Global <${this[0]}>`
+        case 'global': return 'Global ' + (typeof this[0] === 'number' ? '_' + this[0] : `<${this[0]}>`)
         case 'local': return `Local ${this[0]}`
       } }
   }
@@ -647,7 +647,7 @@ var Reason = (options = {}) => {
         token = next();
       }
       function assertId () { if (!('id' in token) || 'value' in token) error.parser_notid(token, index) }
-      function assertOp () { if (!('id' in token && 'value' in token && token.value === 'op')) error.parser_mismatch(token, index) }
+      function assertOp () { if (!('id' in token) || 'value' in token && token.value !== 'op') error.parser_mismatch(token, index) }
 
       function alt (fn) { // TODO: move the environment state into alt
         let rewind = index;
@@ -917,7 +917,7 @@ var Reason = (options = {}) => {
             // f a b...
             .catch(() => parseTerm(env, 'var'))
             // x _*_ y...
-            .then(tm => alt(() => mixfix(env, tm)).catch(() => tm))
+            .then(tm => mixfix(env, tm).catch(() => tm))
             .then(tm => altMsg('Try apply', () => {
               let ts = [], eps = [];
               parserDebug('Application?');
@@ -1067,25 +1067,25 @@ var Reason = (options = {}) => {
           assertOp();
           let ts = [], name = token.id, [mi, pi] = findMixfix(name, parser.mixfixes.map(x => x[0]));
           if (!~pi) {
-            if (!mbTerm) return parseTerm(env, 'app').then(tm => mixfix(env, tm));
-            throw new Error('');
+            if (!mbTerm) return parseTerm(env, 'var').then(tm => mixfix(env, tm));
+            error.parser_mismatch(token, index);
           }
           let [mfName, fixity] = parser.mixfixes[mi], lexAp = lexMixfix(name), lexOp = lexMixfix(mfName);
           if (mbTerm) {
-            if (lexAp[0] === '_') throw new Error('');
+            if (lexAp[0] === '_') error.parser_mismatch(token, index);
             ts.unshift(mbTerm)
           }
           if (pi > 1) error.parser_mixfix_miss_id(mfName, lexOp.slice(!!mbTerm, pi).join(''));
           ts = ts.concat(lexAp.filter(x => x === '_').fill(false));
           lexOp.splice(0, lexAp.length + pi);
           return (function loop () {
-            if (lexOp.length === 1 && lexOp[0] === '_') return parseTerm(env, 'app').then(tm => {
+            if (lexOp.length === 1 && lexOp[0] === '_') return parseTerm(env, 'var').then(tm => {
               // ..._a x
               ts.unshift(tm);
               lexOp.shift();
               return loop()
             });
-            return alt(() => parseTerm(env, 'app').then(tm => {
+            return parseTerm(env, 'var').then(tm => {
               // ..._a x b_...[...]
               advance('Next mixfix operator?');
               assertOp();
@@ -1096,10 +1096,9 @@ var Reason = (options = {}) => {
               (ts = lexAp.filter(x => x === '_').fill(false).concat(ts)).unshift(tm);
               lexOp.splice(0, lexAp.length);
               return loop()
-            }))
+            })
           })()
-            .catch(err => {
-              if (!err.message) error.parser_mismatch(token, index);
+            .catch(() => {
               ts = ts.slice(ts.concat([true]).findIndex(Boolean));
               let falses = ts.filter(x => !x), i = 0, mfTerm;
               if (~parser.tnames.indexOf(mfName)) {
@@ -1154,7 +1153,7 @@ var Reason = (options = {}) => {
       }
       function nestedLambda (body, eps, index) { return body.ctor === 'lam' ? nestedLambda(body[0], eps.concat([body[1]]), index + 1):
         (checkMf(body[0], [], index) ||
-          Array.from(Array(index), (_, i) => bracesIf(eps[i], vars(i))).join(', ') + ' => ' + recPrint(body, 0, index)) }
+          Array.from(Array(index), (_, i) => bracesIf(eps[i], vars(i))).join(' , ') + ' => ' + recPrint(body, 0, index)) }
       function nestedPi (range, domain, eps, index) { return domain.ctor === 'pi' ?
         nestedPi([[domain[0], index]].concat(range), domain[1], eps.concat([domain[2]]), step(index + 1)) :
         (checkMf(domain, [], index) ||
@@ -1346,6 +1345,12 @@ var Reason = (options = {}) => {
           case 'app': return infer(innerArgs = {ctx, term: term[0], index})
             .then(type => {
               term[0] = innerArgs.term;
+              // while (!term[2] && type[2]) {
+              //   let typeVar = new Term({freevar: [ new Name({global: [parser.fresh()]}) ]})
+              //   ctx.extend(new Decl({sig: [ local, typeVar ]}))
+              //   type = type[1](evaluate(typeVar, ctx))
+              // }
+              if (term[2] && !type[2]) error.tc_erasure_mismatch();
               if (type.ctor !== 'vpi') error.tc_app_mismatch(quote(type));
               let [dom, func] = type;
               return check(ctx, term[1], dom, index)
@@ -1390,6 +1395,7 @@ var Reason = (options = {}) => {
     function check (ctx, term, typeVal, index = 0) { //context, term, term, number -> term:term, type:value
       if (debug.typechecker) log('check', term.toString(), term, typeVal.toString(), typeVal);
       // log('ctx', ...ctx.decls.map(x => x.toString()))
+      // if (typeVal.ctor === 'vfree' && typeVal[0].ctor === 'global' && typeof typeVal[0][0] === 'number') unify(term, typeVal); //UGLY
       let innerArgs;
       return Promise.resolve().then(() => {
         switch (term.ctor) {
