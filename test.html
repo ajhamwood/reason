@@ -18,7 +18,7 @@
   // Testing
 
   const R = Reason({
-    debug: {lexer: false, parser: false, parsedDecl: false, typechecker: false},
+    debug: {lexer: true, parser: true, parsedDecl: false, typechecker: false},
     printer: {noMixfixes: false}
   });
 
@@ -179,28 +179,6 @@
     //   "{A} xs ys | xs":
     //   [ "Nil := ys",
     //     "Cons a as := (++) {A} as (Cons a ys)" ] });
-
-    // let Either = new R.Data(
-    //       "Either", "(A : Type)(B : Type) : Type",
-    //       [ "Left : A -> Either A B",
-    //         "Right : B -> Either A B" ]
-    //     ),
-    //     Unit = new R.Data(
-    //       "Unit", "Type",
-    //       [ "TT : Unit" ]
-    //     ),
-    //     Bool = new R.Data(
-    //       "Bool", "Type",
-    //       [ "F : Bool",
-    //         "T : Bool" ]
-    //     ),
-    //     ifThenElse = await new R.Sig(
-    //       "if_then_else_", "{A B : Type} -> Bool -> A -> B -> Either A B"
-    //     ).Def({
-    //       "{A}{B} b x y | b":
-    //       [ "T := x", "F := y" ]
-    //     }).ready;
-
 
 
     Vec = new R.Data(
