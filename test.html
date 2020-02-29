@@ -18,7 +18,7 @@
   // Testing
 
   const R = Reason({
-    debug: {lexer: true, parser: true, parsedDecl: false, typechecker: false},
+    debug: {lexer: false, parser: false, parsedDecl: false, typechecker: true},
     printer: {noMixfixes: false}
   });
 
@@ -56,51 +56,53 @@
   //   console.log(partialIf.print);
   // })();
 
+
+
   (async () => {
     let passFail = obj => {
       for (let test in obj) try { console.log(obj[test]()) }
         catch (e) { console.log(test, e) }
     }
 
-    // functions, lambdas
-    id1 = new R
-      .Sig('id', '(T : Type) -> T -> T')
-      .Def('(t , x => x)');
-
-    // functions with builtins
-    id2 = new R.Def("id'", '({t} , x => x) : {T : Type} -> T -> T',
-      { toString () { return this[0].toString() },
-      valueOf () { return this[0].valueOf() } }
-    );
-
-
-    // types
-    Void = new R.Data('Void', 'Type', []);
-    Unit = await new R.Data(
-      'Unit', 'Type',
-      [ { 'TT : Unit':
-        { toString: () => '()',
-          valueOf: () => null } } ],
-      { fromJS: () => Unit().tt() }
-    ).ready;
-
-    console.log(Unit, Unit())
-
-    let unit = Unit();
-    console.log('unit', unit, unit.term.toString(), unit.type.toString(), unit.toString());
-    tt = Unit().tt();
-    console.log('tt', tt, tt.term.toString(), tt.type.toString(), tt.toString(), tt.valueOf())
-
-
+    // // functions, lambdas
+    // id1 = new R
+    //   .Sig('id', '(T : Type) -> T -> T')
+    //   .Def('(t , x => x)');
+    //
+    // // functions with builtins
+    // id2 = new R.Def("id'", '({t} , x => x) : {T : Type} -> T -> T',
+    //   { toString () { return this[0].toString() },
+    //   valueOf () { return this[0].valueOf() } }
+    // );
+    //
+    //
+    // // types
+    // Void = new R.Data('Void', 'Type', []);
+    // Unit = await new R.Data(
+    //   'Unit', 'Type',
+    //   [ { 'TT : Unit':
+    //     { toString: () => '()',
+    //       valueOf: () => null } } ],
+    //   { fromJS: () => Unit().tt() }
+    // ).ready;
+    //
+    // console.log(Unit, Unit())
+    //
+    // let unit = Unit();
+    // console.log('unit', unit, unit.term.toString(), unit.type.toString(), unit.toString());
+    // tt = Unit().tt();
+    // console.log('tt', tt, tt.term.toString(), tt.type.toString(), tt.toString(), tt.valueOf())
+    //
+    //
     Bool = new R.Data(
       'Bool', 'Type',
       [ { 'F : Bool': { toString: () => 'F', valueOf: () => false } },
         { 'T : Bool': { toString: () => 'T', valueOf: () => true } } ],
       { fromJS: v => Bool()[v ? 't' : 'f']() }
     );
-    // f = new R.Def("f", "f : Bool") // circular definition!
-    lamTest = new R.Def('lamTest', '((x => x) : Bool -> Bool) F : Bool');
-
+    // // f = new R.Def("f", "f : Bool") // circular definition!
+    // lamTest = new R.Def('lamTest', '((x => x) : Bool -> Bool) F : Bool');
+    //
     Nat = new R.Data(
       "Nat", 'Type',
       [ { "Z : Nat": { toString: () => 'Z', valueOf: () => 0 } },
@@ -111,29 +113,29 @@
     );
 
     await R.ready;
-    let nat2 = Nat().s(Nat().s(Nat().z()));
-    console.log(nat2, nat2.term.print(), nat2.toString(), nat2.valueOf());
-    let nat3 = Nat().fromJS(3);
-    console.log(nat3.toString(), nat3.type.print())
-
-    // pattern matching
+    // let nat2 = Nat().s(Nat().s(Nat().z()));
+    // console.log(nat2, nat2.term.print(), nat2.toString(), nat2.valueOf());
+    // let nat3 = Nat().fromJS(3);
+    // console.log(nat3.toString(), nat3.type.print())
+    //
+    // // pattern matching
     plus = new R.Sig("plus", "Nat -> Nat -> Nat").Def({"x y | x": ["Z := y", "S m := S (plus m y)"]});
-    _plus_ = new R
-      .Sig("_+_ r6", "Nat -> Nat -> Nat")
-      // .Def([
-      //   "@ Z n := n",
-      //   "@ (S m) n := S (m + n)"
-      // ])
-      .Def({
-        "x y | x":
-        [ "Z := y",
-          "S m := S (m + y)" ]
-      });
-    onePlusOne = await new R.Sig(
-      "onePlusOne", "Nat").Def(
-      "(+) (S Z) (S Z)"  ).ready;
-
-    console.log(`%conePlusOne =`, 'font-weight: bold; color: deeppink', onePlusOne.result.print());
+    // _plus_ = new R
+    //   .Sig("_+_ r6", "Nat -> Nat -> Nat")
+    //   // .Def([
+    //   //   "@ Z n := n",
+    //   //   "@ (S m) n := S (m + n)"
+    //   // ])
+    //   .Def({
+    //     "x y | x":
+    //     [ "Z := y",
+    //       "S m := S (m + y)" ]
+    //   });
+    // onePlusOne = await new R.Sig(
+    //   "onePlusOne", "Nat").Def(
+    //   "(+) (S Z) (S Z)"  ).ready;
+    //
+    // console.log(`%conePlusOne =`, 'font-weight: bold; color: deeppink', onePlusOne.result.print());
 
     List = new R.Data(
       "List", "(A : Type) : Type",
@@ -143,6 +145,7 @@
             valueOf () { return [ this[0].valueOf() ].concat(this[1].valueOf()) } } } ],
       { fromJS (v) { let p = () => v.length ? this.cons(this.a.fromJS(v.shift()), p()) : this.nil(); return p() } } );
 
+    await R.ready;
 
     let a = await plus(Nat().s(Nat().s(Nat().z()))).ready;
     console.log(a, a.result.print())
