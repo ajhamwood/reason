@@ -1003,7 +1003,7 @@ var Reason = (options = {}) => {
                     .catch(() => [[false, false]])
                     .then(bvs =>
                       // (vars : term)
-                      parseTerm(env, 'bind').then(tm => {
+                      parseTerm(env, 'ann').then(tm => {
                         boundvars = bvs.map(x => x[0]).concat(boundvars);
                         types = bvs.map(() => tm).concat(types);
                         epsilons = bvs.map(x => x[1]).concat(epsilons);
@@ -1204,7 +1204,7 @@ var Reason = (options = {}) => {
           case 'ann': return parensIf(int1 > 1, recPrint(obj[0], 2, int2) + ' : ' + recPrint(obj[1], 0, int2))
           case 'pi': return obj[1].ctor === 'pi' ?
             parensIf(int1 > 1, nestedPi([[obj[1][0], step(int2 + 1)], [obj[0], int2]], obj[1][1], [obj[2], obj[1][2]], step(int2 + 2))) :
-            parensIf(true, bracesIf(obj[2], `[${int2}]` + recPrint(obj[0], obj[2], int2)) + ' -> ' +
+            enclosureIf(obj[2], obj[0].ctor === 'pi', (obj[0].ctor === 'pi' ? `[${int2}]` : '') + recPrint(obj[0], obj[2], int2) + ' -> ' +
               (checkMf(obj[1], [], step(int2 + 1)) || recPrint(obj[1], 0, int2 + 1)))
           case 'lam': return parensIf(int1 > 0, obj[0].ctor === 'lam' ?
             nestedLambda(obj[0][0], [obj[1], obj[0][1]], int2 + 2) :
@@ -1234,19 +1234,21 @@ var Reason = (options = {}) => {
           obj[1].map(arg => ' ' + (arg[1] ? `{${recPrint(arg[0], 1, int2)}}` : recPrint(arg[0], 1, int2))).join(''))
         }
       } else if (testObj(Tele)) {
-        return (obj.items.length ? ' ' : '') + obj.items.map(item => {
+        return obj.items.map((item, i) => {
           switch (item.ctor) {
-            case 'term': return `(${recPrint(item[0], 0, int2) + ' : ' + recPrint(item[1], 0, int2)})`
-            case 'erased': return `{${recPrint(item[0], 0, int2) + ' : ' + recPrint(item[1], 0, int2)}}`
+            case 'term': return item[0].ctor === 'global' && typeof item[0][0] === 'number' ? (i ? ' -> ' : '') + recPrint(item[1], 0, int2) :
+              `(${recPrint(item[0], 0, int2) + ' : ' + recPrint(item[1], 0, int2)})`
+            case 'erased': return `{${(item[0].ctor === 'global' && typeof item[0][0] === 'number' ? '' :
+              recPrint(item[0], 0, int2) + ' : ') + recPrint(item[1], 0, int2)}}`
             case 'constraint': return `{${recPrint(item[0], 0, int2) + ' = ' + recPrint(item[1], 0, int2)}}`
           }
-        }).join('')
-      } else if (testObj(Ctor)) return recPrint(obj[0]) + recPrint(obj[1]);
+        }).join('') + (obj.items.length ? ' ' : '')
+      } else if (testObj(Ctor)) return recPrint(obj[0]) + ' : ' + recPrint(obj[1]);
       else if (testObj(Value)) error.print_value(print(quote(obj)));
       else if (typeof obj === 'string') return obj;
       else error.print_bad(obj)
     })(o);
-    return preString.replace(/\[(\d{1,3})\]/g, (_, m) => (anns[m] ? vars(anns.slice(0, m + 1).reduce((a, b) => a + b) - 1) + ' : ' : ''))
+    return preString.replace(/\[(\d{1,3})\]/g, (_, m) => (anns[m] ? vars(anns.slice(0, parseInt(m) + 1).reduce((a, b) => a + b) - 1) + ' : ' : ''))
   }
 
 
@@ -1637,16 +1639,18 @@ var Reason = (options = {}) => {
     function positivityCheck (name, ctorName, tele) {
       let recVars = [];
       tele.items.filter(item => item.ctor !== 'constraint').forEach(([varName, type]) => {
-        return type[0].equal(name) || (function branch (term, terminal) {
+        let typeTerm = quote(type);
+        return typeTerm[0].equal(name) || (function branch (term, terminal) {
           switch (term.ctor) {
-            case 'pi': return term.slice(0, 2).every((loc, i) => branch(loc, terminal && i))
+            case 'pi': return term.every((loc, i) => !Term.prototype.isPrototypeOf(loc) || branch(loc, terminal && i))
+            case 'app': return term.every(loc => !Term.prototype.isPrototypeOf(loc) || branch(loc, terminal))
             case 'freevar': return recVars.every(recVar => !term[0].equal(recVar))
             case 'tcon':
             if (term[0].equal(name) && terminal) recVars.push(varName);
             if (!term[0].equal(name) || terminal) return term[1].every(loc => branch(loc, terminal));
             default: return false
           }
-        })(quote(type), true) || error.tc_tdef_not_positive(name, ctorName)
+        })(typeTerm, true) || error.tc_tdef_not_positive(name, ctorName)
       })
     }
 
@@ -1862,16 +1866,16 @@ var Reason = (options = {}) => {
                 let tail = ctor[1].tail(), type = ctor[1].items.slice(-1)[0];
                 return tcTele(context.cons(new Decl({datasig: [name, tcParams, tcIndices]})).concatTele(tcParams), tail)
                   .then(tcCtor => {
-                    tcParams.items.forEach((item, i) => item[0].equal(type[1][1][i][0]) || error.tc_tcon_params(name, type[1][1][i][0], item[0]));
+                    tcParams.items.forEach((item, i) => item[1] || item[0].equal(type[1][1][i][0]) || error.tc_tcon_params(name, type[1][1][i][0], item[0]));
                     return tcArgTele(new Context(context).concatTele(tcParams, tcCtor),
-                      type[1][1].slice(tcParams.items.length).map(i => new Arg({arg: [i, false]})), tcIndices.items)
+                      type[1][1].slice(tcParams.length).map(i => new Arg({arg: [i, false]})), tcIndices.items)
                       .then(() => positivityCheck(name, ctor[0], tcCtor))
                       .then(() => acc.concat([ new Ctor({ctor: [ ctor[0], tcCtor.term(type[0], evaluate(type[1], context)) ]}) ]))
                   })
               }), Promise.resolve([])).then(ctors => {
                 let quoteTele = tl => new Tele(...tl.items.map(item =>
                   new Item({[item.ctor]: [ item.ctor === 'constraint' ? quote(item[0]) : item[0], quote(item[1]) ]})));
-                console.log(print(name) + print(quoteTele(tcParams)) + ' : ' + print(quoteTele(tcIndices)) + (tcIndices.length ? ' -> ' : '') + 'Type' +
+                console.log(print(name) + ' ' + print(quoteTele(tcParams)) + ': ' + print(quoteTele(tcIndices)) + (tcIndices.length ? '-> ' : '') + 'Type' +
                   ctors.map(ctor => '\n  ' + print(new Ctor({ctor: [ ctor[0], quoteTele(ctor[1]) ]}))).join(''));
                 let decl = new Decl({data: [name, tcParams, tcIndices, ctors]});
                 context.extend(decl);
