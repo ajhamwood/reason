@@ -573,7 +573,7 @@ var Reason = (options = {}) => {
         case 'data': return `DATA: ${this[0].toString()}${
           this[1].items.length ? ' ' + this[1].toString() : ''} : ${this[2].toString() + (this[2].length ? ' -> ' : '')}Type` +
           this[3].map(ctor => `\n  ${ctor.toString()}`).join('')
-        case 'datasig': return `DATASIG: ${this[0].toString()} ${this[1].tail().toString()} : ${this[1].items.slice(-1)[0].toString()}`
+        case 'datasig': return `DATASIG: ${this[0].toString()} ${this[1].toString()} : ${this[2].toString() + (this[2].length ? ' -> ' : '')}Type`
       }
     }
   }
@@ -989,9 +989,9 @@ var Reason = (options = {}) => {
       }
 
       function dataDef (env, clause) { // For now, treat both params and indices as telescopes (params actually ought to be a lightweight context)
-        function ctorBindings (e) {
+        function ctorBindings () {
           // {bnd} (bnd) ...
-          return bindings(e, false)
+          return bindings(env, false)
             .then(bindings => bindings.boundvars.length ? bindings :
               parseTerm(env, 'ann').then(tm => ({ boundvars: [false], types: [tm], epsilons: [false] })))
             .then(({boundvars, types, epsilons}) =>
@@ -1003,7 +1003,7 @@ var Reason = (options = {}) => {
                     .catch(() => [[false, false]])
                     .then(bvs =>
                       // (vars : term)
-                      parseTerm(boundvars.concat(env), 'bind').then(tm => {
+                      parseTerm(env, 'bind').then(tm => {
                         boundvars = bvs.map(x => x[0]).concat(boundvars);
                         types = bvs.map(() => tm).concat(types);
                         epsilons = bvs.map(x => x[1]).concat(epsilons);
@@ -1022,15 +1022,15 @@ var Reason = (options = {}) => {
         switch (clause) {
           // {bnd} ... -> term -> ... : {bnd} ... -> term -> ... -> Type
           case 'ddef': return altMsg('Try Type Definition', () => // returns [params, indices]
-            ctorBindings(env).then(bindings1 => {
+            ctorBindings().then(bindings1 => {
               let tele1 = parseTele(bindings1);
               return alt(() => {
                 advance('Typedef separator?', {value: 'op', id: ':'});
-                return ctorBindings(bindings1.boundvars.concat(env)).then(parseTele)
+                return ctorBindings().then(parseTele)
                   .then(tele2 => [tele1, tele2])
               }).catch(() => [new Tele(), tele1])
                 .then(tcon => {
-                  if (tcon[1].items[0][1].ctor !== 'star') error.parser_tcon_type();
+                  if (tcon[1].items.slice(-1)[0][1].ctor !== 'star') error.parser_tcon_type();
                   return [tcon[0], tcon[1].tail()]
                 })
             })
@@ -1288,7 +1288,7 @@ var Reason = (options = {}) => {
     localVal (i) { return this.decls[this.decls.length - i - 1][1] }
     concatTele (...teles) {
       return teles.flatMap(tele => tele.items).reduce((acc, item) => { switch (item.ctor) {
-        case 'term': case 'erased': return acc.cons(new Decl({sig: [item[0][0], item[1]]}))
+        case 'term': case 'erased': return acc.cons(new Decl({sig: [...item]}))
         case 'constraint': return acc.cons({def: [...item]})
       } }, new Context(this))
     }
@@ -1356,6 +1356,7 @@ var Reason = (options = {}) => {
     // Infer/check
     function infer (args) { //context, term, number -> value
       let { ctx, term, index = 0 } = args, innerArgs;
+      if (debug.typechecker) log('infer', term.toString());
       return Promise.resolve().then(() => {
         let result, vstar = new Value({vstar: []}), local = new Name({local: [index]});
         switch (term.ctor) {
@@ -1407,7 +1408,7 @@ var Reason = (options = {}) => {
           let [params, indices] = result.ddef;
           let runtimeItems = params.concat(indices).items.filter(x => x.ctor === 'term');
           if (runtimeItems.length !== term[1].length) error.tc_dcon_arg_len(term[1].length, runtimeItems.length); // BUG: erased args?
-          return tcArgTele(ctx, term[1].map(x => new Arg({arg: [x, false]})), params.concat(indices).tail().items).then(() => vstar)
+          return tcArgTele(ctx, term[1].map(x => new Arg({arg: [x, false]})), params.concat(indices).items).then(() => vstar)
 
           case 'dcon':
           if (typeof term[2] !== 'undefined') return check(ctx, term, term[2], index);
@@ -1420,13 +1421,16 @@ var Reason = (options = {}) => {
 
           case 'lam': error.tc_cannot_infer('lambda')
           case 'case': error.tc_cannot_infer('case')
+          case 'boundvar': error.tc_cannot_infer('boundvar')
         }
       })
     }
 
     function check (ctx, term, typeVal, index = 0) { //context, term, term, number -> term:term, type:value
-      if (debug.typechecker) log('check', term.toString(), term, typeVal.toString(), typeVal);
-      // log('ctx', ...ctx.decls.map(x => x.toString()))
+      if (debug.typechecker) {
+        log('check', term.toString(), term, typeVal.toString(), typeVal);
+        log('ctx', ctx.decls.slice(), ...ctx.decls.map(x => x.toString()))
+      }
       // if (typeVal.ctor === 'vfree' && typeVal[0].ctor === 'global' && typeof typeVal[0][0] === 'number') unify(term, typeVal); //UGLY
       let innerArgs;
       return Promise.resolve().then(() => {
@@ -1449,8 +1453,8 @@ var Reason = (options = {}) => {
           let match = ctx.lookup(term[0], 'ctor', type[0]);
           if (match.cdef === null || match.ddef === null) error.tc_term_not_found(term[0][0], type[0][0]);
           if (match.cdef.length - 1 !== term[1].filter(x => !x[1]).length) error.tc_dcon_arg_len(term[1].length, match.cdef.length - 1);
-          let items = substTele(ctx, match.ddef[0].concat(match.ddef[1]), type[1], match.cdef);
-          return tcArgTele(ctx, term[1], items.slice(0, -1)).then(args => ({ term: new Term({dcon: [ term[0], args, typeVal ]}), type: typeVal }))
+          let items = substTele(ctx, match.ddef[0].concat(match.ddef[1]), type[1], match.cdef.tail());
+          return tcArgTele(ctx, term[1], items).then(args => ({ term: new Term({dcon: [ term[0], args, typeVal ]}), type: typeVal }))
 
           case 'case':
           return infer(innerArgs = {ctx, term: term[0], index})
@@ -1523,7 +1527,7 @@ var Reason = (options = {}) => {
       }
     }
 
-    function substFV (term1, term2, name) {
+    function substFV (term1, term2, name) { // name must be a freevar
       switch (term2.ctor) {
         case 'ann': return new Term({ann: [ substFV(term1, term2[0], name), substFV(term1, term2[1], name) ]})
         case 'pi': return new Term({pi: [ substFV(term1, term2[0], name), substFV(term1, term2[1], name), term2[2] ]})
@@ -1547,7 +1551,7 @@ var Reason = (options = {}) => {
           let [name, type] = item;
           return check(ctx, type, new Value({vstar: []}))
             .then(({term}) => ctx.extend(new Decl({sig: [ name, type = evaluate(term, ctx) ]})))
-            .then(() => acc.concat([new Item({[item.ctor]: [ new Term({freevar: [name]}), type ]})]))
+            .then(() => acc.concat([new Item({[item.ctor]: [ name, type ]})]))
 
           case 'constraint':
           return infer({ctx, term: item[0]})
@@ -1624,7 +1628,7 @@ var Reason = (options = {}) => {
     function substTele (ctx, tele1, terms, tele2) {
       return doSubst(ctx, tele1.items.map((item, i) => {
         switch (item.ctor) {
-          case 'term': return [item[0], terms[i]];
+          case 'term': return [new Term({freevar: [item[0]]}), terms[i]];
           default: error.internal_arg('substTele')
         }
       }), tele2)
@@ -1634,15 +1638,15 @@ var Reason = (options = {}) => {
       let recVars = [];
       tele.items.filter(item => item.ctor !== 'constraint').forEach(([varName, type]) => {
         return type[0].equal(name) || (function branch (term, terminal) {
-          switch (type.ctor) {
+          switch (term.ctor) {
             case 'pi': return term.slice(0, 2).every((loc, i) => branch(loc, terminal && i))
-            case 'freevar': return recVars.every(recVar => !type[0].equal(recVar))
+            case 'freevar': return recVars.every(recVar => !term[0].equal(recVar))
             case 'tcon':
-            if (type[0].equal(name) && terminal) recVars.push(varName);
-            if (!type[0].equal(name) || terminal) return type[1].every(loc => branch(loc, terminal));
+            if (term[0].equal(name) && terminal) recVars.push(varName);
+            if (!term[0].equal(name) || terminal) return term[1].every(loc => branch(loc, terminal));
             default: return false
           }
-        })(type, true) || error.tc_tdef_not_positive(name, ctorName)
+        })(quote(type), true) || error.tc_tdef_not_positive(name, ctorName)
       })
     }
 
@@ -1660,8 +1664,8 @@ var Reason = (options = {}) => {
         case 'patdcon':
         if (ep) error.tc_erased_pat();
         let result = ctx.lookup(pat[0], 'ctor', type[0]),
-            items = substTele(ctx, result.ddef[0].concat(result.ddef[1]).tail(), type[1], result.cdef);
-        return declarePats(ctx, pat[0], pat[1], items.slice(0, -1))
+            items = substTele(ctx, result.ddef[0].concat(result.ddef[1]), type[1], result.cdef.tail());
+        return declarePats(ctx, pat[0], pat[1], items)
       }
     }
     function declarePats (ctx, name, patArgs, items) {
@@ -1694,8 +1698,8 @@ var Reason = (options = {}) => {
       else if (pat.ctor === 'patbvar') return new Term({boundvar: [pat[0]]});
       else if (pat.ctor === 'patdcon' && type.ctor !== 'tcon' && type.ctor !== 'app') error.internal_arg('quotePat');
       let result = ctx.lookup(pat[0], 'ctor', type[0]),
-          items = substTele(ctx, result.ddef[0].concat(result.ddef[1]).tail(), type[1], result.cdef),
-          rightItems = items.slice(0, -1), args = [], i = 0;
+          items = substTele(ctx, result.ddef[0].concat(result.ddef[1]), type[1], result.cdef.tail()),
+          rightItems = items, args = [], i = 0;
       while (
         (!(rightItems.length ^ (i === pat[1].length)) && error.tc_pat_len(pat[0])) ||
         rightItems.length
@@ -1722,8 +1726,8 @@ var Reason = (options = {}) => {
         case 'dcon':
         if (!term[0].equal(pat[0])) return [];//error.tc_pat_cannot_omit(pat[0]);
         let result = ctx.lookup(term[0], 'ctor', type[0]),
-            items = substTele(ctx, result.ddef[0].concat(result.ddef[1]).tail(), type[1], result.cdef),
-            rightItems = items.slice(0, -1), decls = [], i = 0;
+            items = substTele(ctx, result.ddef[0].concat(result.ddef[1]), type[1], result.cdef.tail()),
+            rightItems = items, decls = [], i = 0;
         for (; rightItems.length; i++) {
           let thisItem = rightItems.shift();
           switch (thisItem.ctor) {
@@ -1745,7 +1749,7 @@ var Reason = (options = {}) => {
     function exhaustivityCheck (ctx, term, type, pats) {
       function checkImpossible (cdefs) {
         return cdefs.reduce((p, cdef) => p.then(acc =>
-          tcTele(ctx, new Tele(...substTele(ctx, result.ddef[0].concat(result.ddef[1]).tail(), type[1], cdef[1])))
+          tcTele(ctx, new Tele(...substTele(ctx, result.ddef[0].concat(result.ddef[1]), type[1], cdef[1]))) //why not cdef[1].tail()?
             .then(() => [cdef[0]])
             .catch(() => [])
             .then(res => acc.concat(res))
@@ -1797,9 +1801,9 @@ var Reason = (options = {}) => {
         } else ps.forEach((pat, i) => {
           if (pat.ctor === 'patdcon') {
             let [cd, dcons1] = removeDcon(pat[0], dcons.slice());
-            let items = substTele(ctx, result.ddef[0].concat(result.ddef[1]).tail(), type[1], cd[1]),
+            let items = substTele(ctx, result.ddef[0].concat(result.ddef[1]), type[1], cd[1].tail()),
                 [argss, pats1] = relatedPats(pat[0], ps.slice(i + 1));
-            checkSubPats(pat[0], items.slice(0, -1), [pat[1], ...argss]);
+            checkSubPats(pat[0], items, [pat[1], ...argss]);
             return branch(pats1, dcons1)
           }
         })
@@ -1852,29 +1856,30 @@ var Reason = (options = {}) => {
         case 'data':
         [name, params, indices, ctors] = decl;
         return tcTele(new Context(context), params)
-          .then(tele1 => tcTele(new Context(context).concatTele(params), indices).then(tele2 => [tele1, tele2]))
-          .then(([tele1, tele2]) =>
-            ctors.reduce((p, ctor) => p.then(acc => {
-              let tail = ctor[1].tail(), type = ctor[1].items.slice(-1)[0];
-              return tcTele(context.cons(new Decl({datasig: [name, tele1, tele2]})).concatTele(tele1), tail)
-                .then(ctele => {
-                  params.items.forEach((item, i) => item[0].equal(type[1][1][i][0]) || error.tc_tcon_params(name, type[1][1][i][0], item[0]));
-                  return tcArgTele(new Context(context).concatTele(params, tail), type[1][1].slice(params.items.length), indices.items)
-                    .then(() => positivityCheck(name, ctor[0], tail))
-                    .then(() => acc.concat([ new Ctor({ctor: [ ctor[0], ctele.term(type[0], evaluate(type[1], context)) ]}) ]))
-                })
-            }), Promise.resolve([])).then(ctors => {
-              let quoteTele = tl => new Tele(...tl.items.map(item =>
-                new Item({[item.ctor]: [ item.ctor === 'constraint' ? quote(item[0]) : item[0], quote(item[1]) ]})));
-              console.log(print(name) + print(quoteTele(tele1)) + ' : ' + print(quoteTele(tele2)) + (tele2.length ? ' -> ' : '') + 'Type' +
-                ctors.map(ctor => '\n  ' + print(new Ctor({ctor: [ ctor[0], quoteTele(ctor[1]) ]}))).join(''));
-              let decl = new Decl({data: [name, params, indices, ctors]});
-              context.extend(decl);
-              return [{ declName: 'data', params, indices, type: new Term({star: []}), ctors,
-                ...(params.items.length + indices.items.length - 1 ? {term: new Term({tcon: [name, []]})} : {})
-              }]
-            })
-          )
+          .then(tcParams => tcTele(new Context(context).concatTele(tcParams), indices)
+            .then(tcIndices => {
+              return ctors.reduce((p, ctor) => p.then(acc => {
+                let tail = ctor[1].tail(), type = ctor[1].items.slice(-1)[0];
+                return tcTele(context.cons(new Decl({datasig: [name, tcParams, tcIndices]})).concatTele(tcParams), tail)
+                  .then(tcCtor => {
+                    tcParams.items.forEach((item, i) => item[0].equal(type[1][1][i][0]) || error.tc_tcon_params(name, type[1][1][i][0], item[0]));
+                    return tcArgTele(new Context(context).concatTele(tcParams, tcCtor),
+                      type[1][1].slice(tcParams.items.length).map(i => new Arg({arg: [i, false]})), tcIndices.items)
+                      .then(() => positivityCheck(name, ctor[0], tcCtor))
+                      .then(() => acc.concat([ new Ctor({ctor: [ ctor[0], tcCtor.term(type[0], evaluate(type[1], context)) ]}) ]))
+                  })
+              }), Promise.resolve([])).then(ctors => {
+                let quoteTele = tl => new Tele(...tl.items.map(item =>
+                  new Item({[item.ctor]: [ item.ctor === 'constraint' ? quote(item[0]) : item[0], quote(item[1]) ]})));
+                console.log(print(name) + print(quoteTele(tcParams)) + ' : ' + print(quoteTele(tcIndices)) + (tcIndices.length ? ' -> ' : '') + 'Type' +
+                  ctors.map(ctor => '\n  ' + print(new Ctor({ctor: [ ctor[0], quoteTele(ctor[1]) ]}))).join(''));
+                let decl = new Decl({data: [name, tcParams, tcIndices, ctors]});
+                context.extend(decl);
+                return [{ declName: 'data', params: tcParams, indices: tcIndices, type: new Term({star: []}), ctors,
+                  ...(tcParams.items.length + tcIndices.items.length - 1 ? {term: new Term({tcon: [name, []]})} : {})
+                }]
+              })
+            }))
 
         case 'datasig': error.tc_internal()
       }
@@ -1887,7 +1892,7 @@ var Reason = (options = {}) => {
   // API
 
   const setOptions = opts => { Object.assign(options, opts); debug = options.debug, printer = options.printer },
-        R = { Data, Sig, Def, setOptions },
+        R = { Data, Sig, Def, setOptions, context },
         sequence = (p => fn => p = fn ? p.then(fn) : p)(Promise.resolve());
   Object.defineProperty(R, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))) } }); // TODO: make all props read-only
 
