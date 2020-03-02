@@ -270,7 +270,7 @@ var Reason = (options = {}) => {
       } else if (Array.prototype.isPrototypeOf(declStrings)) { // TODO Sunday: interp case tree
         // Def(name, [clauses], { ...converters })
         // "clause" | {patcase: [subcase...]}
-        sequence(() => declStrings.reduce((p, clause) => p.then(acc =>
+        sequence(() => declStrings.reduce((p, clause) => p.then(([acc, _]) =>
           typeof clause === 'string' ?
             tokenise({name, sourceString: clause})
               .then(lex => parse(lex, 'casetree', {fixity: aux, tree: acc})) :
@@ -279,7 +279,8 @@ var Reason = (options = {}) => {
               if (e.length !== 1) error.malf('definition');
               let [clauseDef, cases] = e;
               return tokenise({name, sourceString: clauseDef}) })
-              .then(lex => parse(lex, 'casetree', {fixity: aux, tree: acc, cases}))), Promise.resolve())
+              .then(lex => parse(lex, 'casetree', {fixity: aux, tree: acc, cases}))), Promise.resolve([]))
+          .then(([tree, lamWrap]) => [lamWrap(tree)])
           .then(decls => typecheck(decls, context))).then(ress => {
             ress.forEach(res => {
               let { declName, term, type } = res, appliedTerms = [];
@@ -509,9 +510,9 @@ var Reason = (options = {}) => {
       switch (this.ctor) {
         case 'ann': return `(${this[0].toString()} : ${this[1].toString()})`
         case 'star': return 'Type'
-        case 'pi': return `${this[2] ? 'Erased ' : ''}Pi(${this[0].toString()}, ${this[1].toString()})`
-        case 'lam': return `${this[1] ? 'Erased ' : ''}Lam(${this[0].toString()})`
-        case 'app': return `${this[0].toString()} :@: ${this[2] ? 'Erased ' : ''}${this[1].toString()}`
+        case 'pi': return `${this[2] ? 'Erased' : ''}Pi(${this[0].toString()}, ${this[1].toString()})`
+        case 'lam': return `${this[1] ? 'Erased' : ''}Lam(${this[0].toString()})`
+        case 'app': return `${this[0].toString()} :@: ${this[2] ? 'Erased' : ''}${this[1].toString()}`
         case 'boundvar': return `Bound ${this[0]}`
         case 'freevar': return `Free ${this[0]}`
         case 'tcon': return `TC:${this[0].toString()}${this[1].map(x => ` (${x.toString()})`).join('')}`
@@ -602,8 +603,8 @@ var Reason = (options = {}) => {
   class Pat extends AST('patdcon', 'patvar', 'patbvar') {
     toString () {
       switch (this.ctor) {
-        case 'patdcon': return `${this[2] ? 'Inac ' : ''}PatDC:${this[0].toString()}${this[1].map(x => ` (${x.toString()})`).join('')}`
-        case 'patvar': return `${this[1] ? 'Inac ' : ''}PatVar ${this[0].toString()}`
+        case 'patdcon': return `${this[2] ? 'Inac' : ''}PatDC:${this[0].toString()}${this[1].map(x => ` (${x.toString()})`).join('')}`
+        case 'patvar': return `${this[1] ? 'Inac' : ''}PatVar ${this[0].toString()}`
         case 'patbvar': return 'PatBVar ' + this[0]
       }
     }
@@ -762,8 +763,8 @@ var Reason = (options = {}) => {
               advance('Casetree statement?');
               let name = token.id;
               if (name.match(/_/)) arg.mixfixes.push([name, parseOptions.fixity]);
-              return caseTree(parseOptions.tree || new Term({case: [ new Name({global: [parser.fresh()]}), [] ]}), parseOptions.cases || [])
-                .then(res => endTest([ new Decl({def: [ new Name({global: [name]}), res ]}) ]}) ]))
+              return caseTree(parseOptions.tree || new Term({case: [ new Term({freevar: [ new Name({local: [0]}) ]}), [] ]}), parseOptions.cases || [])
+                .then(([res, fn]) => endTest([ res, x => new Decl({def: [ new Name({global: [name]}), fn(x) ]}) ]))
                 .catch(e => error.append(e, 'parser_notvalid', 'casetree statement'))
             })
 
@@ -1058,60 +1059,65 @@ var Reason = (options = {}) => {
 
       function caseTree (tree, subcases) {
         // tree: new Term({case: [fv, [new Match({clause: [pat, term]}), new Match({clause: [pat, caseTerm]}), ...]]})
-        return altMsg('Try Case Tree Statement', () => {
-          function subpat (tr) {
-            function patargs () { return alt(() => subpat(tr)).then(patargs) }
-            // (pat)
-            return enclosure(['parens'], () => {
-              advance('Constructor term?');
+        // TODO: enforce args length
+        function patargs (tr, i) {
+          return (function loop() {
+            // {x}
+            return enclosure(['braces'], () => subpat(tr, i).then(res => [res, true]))
+              // x
+              .catch(() => alt(() => subpat(tr, i).then(res => [res, false])))
+              .then(([res, ep]) => {
+                //tr = res;
+                i++;
+                return loop()
+              })
+          })().catch(() => [tr, i])
+        }
+        function subpat (tr, ix) {
+          // (pat)
+          return enclosure(['parens'], () => {
+            advance('Constructor term?');
+            assertId();
+            let name = token.id;
+            if (~parser.tnames.indexOf(name)) error.tc_mismatch_con('type');
+            else if (~parser.dnames.indexOf(name)) {
+              let i = tr[1].findIndex(match => match[0].ctor === 'patdcon' && match[0][0][0] === name);
+              if (!~i) { // New constructor pattern (creates leaf node)
+                return patargs(tr, ix).then(([tr1, _]) => {
+                  advance('Pattern equation separator?', {value: 'op', id: ':='});
+                  return parseTerm([], 'ann')
+                    .then(term => tr[1].push(new Match({match: [ new Pat({patdcon: [ new Name({global: [name]}), args, false ]}), term ]})))
+                })
+              } // Matching constructor pattern with a fresh name at the given pattern argument (steps into internal node)
+              else if (tr[1][i][0].ctor === 'patvar' && tr[1][i][1].ctor === 'case')) return patargs(tr[1][i][1], 0);
+              else { // Matching constructor pattern with a constructor at the given pattern argument (converts leaf node to internal node)
+                let fvName = new Name({global: [ parser.fresh() ]}), splitClause = tr[1][i],
+                    splitPatArg = splitClause[0][1].splice(ix, 1, new Pat({patvar: [fvName]}))[0];
+                tr[1][i] = new Match({clause: [ splitClause[0],
+                  new Term({case: [ new Term({freevar: [fvName]}), [ new Match({match: [ splitPatArg, splitClause[1] ]}) ] ]})
+                ]});
+                return patargs(tr[1][i][0], 0)
+              }
+            } else throw new Error('')
+          }) // _
+            .catch(() => alt(() => { // or parens
+              advance('Wildcard?', {id: '_'});
+              return new Pat({patvar: [ new Name({global: [parser.fresh()]}), false ]})
+            })) // t *or* x
+            .catch(() => { // or parens
+              advance('Variable or constructor term?');
               assertId();
               let name = token.id;
               if (~parser.tnames.indexOf(name)) error.tc_mismatch_con('type');
-              else if (~parser.dnames.indexOf(name)) {
-                let i = tr[1].findIndex(match => match[0].ctor === 'patdcon' && match[0][0][0] === name);
-                if (!~i) {
-                  return patargs().then(() => {
-                    advance('Pattern equation separator?', {value: 'op', id: ':='});
-                    return parseTerm(env, 'ann')
-                    .then(term => tr[1].push(new Match({match: [ new Pat({patdcon: [ new Name({global: [name]}), [], false ]}), term ]})))
-                  })
-                }
-                else if (Name.prototype.isPrototypeOf(attach[1])) return subpat(tr[1][i][1]);
-                else {
-                  return patargs().then(() => {
-                    let fvName = new Name({global: [parser.fresh()]}), splitClause = tr[1][i],
-                    splitPatArg = splitClause[0][1].splice(splitClause[0][1].findIndex(), 1, new Pat({patvar: [fvName]}))[0];
-                    advance('Pattern equation separator?', {value: 'op', id: ':='});
-                    return parseTerm(env, 'ann')
-                    .then(term => tr[1][i] = new Match({clause: [ splitClause[0], new Term({case: [ fvName,
-                      [ new Match({match: [ splitPatArg, splitClause[1] ]}),
-                      new Match({match: [ new Pat({patdcon: [ new Name({global: [name]}), [], false]}), term ]}) ] ]}) ]}))
-                  })
-                }
-              }   // _
-            }).catch(() => alt(() => { // or parens
-                advance('Wildcard?', {id: '_'});
-                return '?'
-              })) // t *or* x
-              .catch(() => { // or parens
-                advance('Variable or constructor term?');
-                assertId();
-                let name = token.id;
-                if (~parser.tnames.indexOf(name)) error.tc_mismatch_con('type');
-                else if (~parser.dnames.indexOf(name)) return '?'
-                else return '?'
-              })
-          }
+              else if (~parser.dnames.indexOf(name)) return new Pat({patdcon: [new Name({global: [name]}), [], false]})
+              else return new Pat({patvar: [ new Name({global: [name]}), false ]})
+            })
+        }
+        return altMsg('Try Case Tree Statement', () => {
           advance('Function clause marker?', {value: 'op', id: '@'});
-          return (function loop() {
-            // {x}
-            return enclosure(['braces'], () => subpat(tree).then(res => [res, true]))
-              // x
-              .catch(() => alt(() => subpat(tree).then(res => [res, false])))
-              .then(([res, ep]) => {
-                return loop()
-              })
-          })()
+          return patargs(tree, 0)
+            // Return tree (case term) and a function which wraps the tree in a lambda
+            .then(([resTree, _]) => [resTree, tr => new Term({lam: [tr, false]})])
         })
       }
 
