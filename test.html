@@ -120,22 +120,22 @@
     //
     // // // pattern matching
     // plus = new R.Sig("plus", "Nat -> Nat -> Nat").Def({"x y | x": ["Z := y", "S m := S (plus m y)"]});
-    // _plus_ = new R
-    //   .Sig("_+_ r6", "Nat -> Nat -> Nat")
-    //   .Def([
-    //     "@  Z    n := n",
-    //     "@ (S m) n := S (m + n)"
-    //   ]);
-    //   // .Def({
-    //   //   "x y | x":
-    //   //   [ "Z := y",
-    //   //     "S m := S (m + y)" ]
-    //   // });
-    // onePlusOne = await new R.Sig(
-    //   "onePlusOne", "Nat").Def(
-    //   "(+) (S Z) (S Z)"  ).ready;
-    //
-    // console.log(`%conePlusOne =`, 'font-weight: bold; color: deeppink', onePlusOne.result.print());
+    _plus_ = new R
+      .Sig("_+_ r6", "Nat -> Nat -> Nat")
+      .Def([
+        "@  Z    n := n",
+        "@ (S m) n := S (m + n)"
+      ]);
+      // .Def({
+      //   "x y | x":
+      //   [ "Z := y",
+      //     "S m := S (m + y)" ]
+      // });
+    onePlusOne = await new R.Sig(
+      "onePlusOne", "Nat").Def(
+      "(+) (S Z) (S Z)"  ).ready;
+
+    console.log(`%conePlusOne =`, 'font-weight: bold; color: deeppink', onePlusOne.result.print());
 
     // half = new R.Sig(
     //   "half", "Nat -> Nat" ).Def({
@@ -143,11 +143,13 @@
     //   [ "Z       := Z",
     //     "S  Z    := Z",
     //     "S (S m) := S (half m)" ] });
-    half = new R.Sig(
+    half = await new R.Sig(
       "half", "Nat -> Nat" ).Def([
       "@  Z        := Z",
       "@ (S  Z)    := Z",
-      "@ (S (S m)) := S (half m)" ])
+      "@ (S (S m)) := S (half m)" ]).ready
+
+    console.log((await half(_plus_(onePlusOne, onePlusOne)).ready).result.toString())
     //
     // List = new R.Data(
     //   "List", "(A : Type) : Type",
