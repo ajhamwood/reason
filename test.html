@@ -18,7 +18,7 @@
   // Testing
 
   const R = Reason({
-    debug: {lexer: false, parser: false, parsedDecl: false, typechecker: true},
+    debug: {lexer: false, parser: false, parsedDecl: false, typechecker: false},
     printer: {noMixfixes: false}
   });
 
@@ -122,15 +122,15 @@
     // plus = new R.Sig("plus", "Nat -> Nat -> Nat").Def({"x y | x": ["Z := y", "S m := S (plus m y)"]});
     // _plus_ = new R
     //   .Sig("_+_ r6", "Nat -> Nat -> Nat")
-    //   // .Def([
-    //   //   "@ Z n := n",
-    //   //   "@ (S m) n := S (m + n)"
-    //   // ])
-    //   .Def({
-    //     "x y | x":
-    //     [ "Z := y",
-    //       "S m := S (m + y)" ]
-    //   });
+    //   .Def([
+    //     "@  Z    n := n",
+    //     "@ (S m) n := S (m + n)"
+    //   ]);
+    //   // .Def({
+    //   //   "x y | x":
+    //   //   [ "Z := y",
+    //   //     "S m := S (m + y)" ]
+    //   // });
     // onePlusOne = await new R.Sig(
     //   "onePlusOne", "Nat").Def(
     //   "(+) (S Z) (S Z)"  ).ready;
@@ -196,19 +196,19 @@
     //     "Cons a as := (++) {A} as (Cons a ys)" ] });
     //
 
-    Vec = new R.Data(
-      "Vec", "(A : Type) : Nat -> Type",
-      [ { "Nil : Vec A Z": { toString: () => '<>', valueOf: () => [] } },
-        { "Cons : {n : Nat} -> A -> Vec A n -> Vec A (S n)":
-          { toString () { return '< ' + (this[1].name === "Cons" ? this[0].toString() + ', ' + this[1].toString().slice(2) : this[0].toString() + ' >') },
-            valueOf () { return [ this[0].valueOf() ].concat(this[1].valueOf()) } } } ],
-      { fromJS (v) { let p = () => v.length ? this.cons(this.a.fromJS(v.shift()), p()) : this.nil(); return p() } } );
-
-    tail = new R.Sig(
-      "tail", "{A : Type}{m : Nat} -> Vec A (S m) -> Vec A m" ).Def({
-      "{A} {m} v | v":
-      [ "Cons {m} y ys := ys",
-        "Nil ()" ] });
+    // Vec = new R.Data(
+    //   "Vec", "(A : Type) : Nat -> Type",
+    //   [ { "Nil : Vec A Z": { toString: () => '<>', valueOf: () => [] } },
+    //     { "Cons : {n : Nat} -> A -> Vec A n -> Vec A (S n)":
+    //       { toString () { return '< ' + (this[1].name === "Cons" ? this[0].toString() + ', ' + this[1].toString().slice(2) : this[0].toString() + ' >') },
+    //         valueOf () { return [ this[0].valueOf() ].concat(this[1].valueOf()) } } } ],
+    //   { fromJS (v) { let p = () => v.length ? this.cons(this.a.fromJS(v.shift()), p()) : this.nil(); return p() } } );
+    //
+    // tail = new R.Sig(
+    //   "tail", "{A : Type}{m : Nat} -> Vec A (S m) -> Vec A m" ).Def({
+    //   "{A} {m} v | v":
+    //   [ "Cons {m} y ys := ys",
+    //     "Nil ()" ] });
 
     // await R.ready;
     //
@@ -236,20 +236,20 @@
     //         valueOf () { return [this[0].valueOf(), this[1](this[0]).valueOf()] } } } ],
     //   { fromJS: ([v, f]) => Sigma().dprod(v, f) } );
 
-    // proof example
-    Id = new R.Data(
-      "_=_", "{A : Type}(k : A) : A -> Type",
-      [ "Refl : k = k" ]
-    )
-    cong = new R.Sig(
-      "cong", "{a b : Type}{c d : a} -> (f : a -> b) -> c = d -> (f c) = (f d)").Def(
-      { "g p | p": [ "Refl := Refl" ] })
-
-    Leq = new R.Data(
-      "_<=_ r20", "Nat -> Nat -> Type",
-      [ "LZ : {n : Nat} -> Z <= n",
-        "LS : {m n : Nat} (p : m <= n) -> (S m) <= (S n)" ]
-    );
+    // // proof example
+    // Id = new R.Data(
+    //   "_=_", "{A : Type}(k : A) : A -> Type",
+    //   [ "Refl : k = k" ]
+    // )
+    // cong = new R.Sig(
+    //   "cong", "{a b : Type}{c d : a} -> (f : a -> b) -> c = d -> (f c) = (f d)").Def(
+    //   { "g p | p": [ "Refl := Refl" ] })
+    //
+    // Leq = new R.Data(
+    //   "_<=_ r20", "Nat -> Nat -> Type",
+    //   [ "LZ : {n : Nat} -> Z <= n",
+    //     "LS : {m n : Nat} (p : m <= n) -> (S m) <= (S n)" ]
+    // );
     // ltZero = new R.Sig('ltZero', '{n : Nat} -> (n <= Z)');
     // twoLTone = new R.Sig(
     //   "twoLTone", "(S (S Z)) <= (S Z)" ).Def(
