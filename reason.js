@@ -511,7 +511,7 @@ var Reason = (options = {}) => {
         case 'star': return 'Type'
         case 'pi': return `${this[2] ? 'Erased' : ''}Pi(${this[0].toString()}, ${this[1].toString()})`
         case 'lam': return `${this[1] ? 'Erased' : ''}Lam(${this[0].toString()})`
-        case 'app': return `${this[0].toString()} :@: ${this[2] ? 'Erased' : ''}${this[1].toString()}`
+        case 'app': return `${this[0].toString()} :@: ${this[2] ? 'Erased ' : ''}${this[1].toString()}`
         case 'boundvar': return `Bound ${this[0]}`
         case 'freevar': return `Free ${this[0]}`
         case 'tcon': return `TC:${this[0].toString()}${this[1].map(x => ` (${x.toString()})`).join('')}`
@@ -1083,12 +1083,12 @@ var Reason = (options = {}) => {
             else if (~parser.dnames.indexOf(name)) {
               let i = tr[1].findIndex(match => match[0].ctor === 'patdcon' && match[0][0][0] === name);
               if (!~i) { // New constructor pattern (creates leaf node)
-                let pat = new Pat({patdcon: [ new Name({global: [name]}), [], false ]});
-                argCsr.unshift((argCsr.length ?
-                  argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
-                  tr[1].push(new Match({clause: [pat, null]}))) - 1);
-                if (argCsr.length === 1) treeCsr.unshift(argCsr[0]);
-                return patargs(tr, csr = treeCsr, argCsr).then(([res]) => res)
+                let pat = new Pat({patdcon: [ new Name({global: [name]}), [], false ]}),
+                    iarg = (argCsr.length ?
+                      argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
+                      tr[1].push(new Match({clause: [pat, null]}))) - 1;
+                if (argCsr.length === 0) treeCsr.unshift(iarg);
+                return patargs(tr, csr = treeCsr, [iarg].concat(argCsr)).then(([res]) => res)
               } // Matching constructor pattern with a fresh name at the given pattern argument (steps into internal node)
               else if (tr[1][i][0].ctor === 'patvar' && tr[1][i][1].ctor === 'case')
                 return patargs(tr[1][i][0], csr = [i].concat(treeCsr), []).then(([res]) => res);
@@ -1105,51 +1105,61 @@ var Reason = (options = {}) => {
           }) // _
             .catch(() => alt(() => { // or parens
               advance('Wildcard?', {id: '_'});
-              let pat = new Pat({patvar: [ new Name({global: [parser.fresh()]}), false ]});
-              argCsr.unshift((argCsr.length ?
-                argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
-                tr[1].push(new Match({clause: [pat, null]}))) - 1);
+              let pat = new Pat({patvar: [ new Name({global: [parser.fresh()]}), false ]}),
+                  iarg = argCsr.length ?
+                    argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
+                    tr[1].push(new Match({clause: [pat, null]}));
+              if (argCsr.length === 0) treeCsr.unshift(iarg - 1);
+              csr = treeCsr;
               return tr
             })) // t *or* x
             .catch(() => alt(() => { // or parens
               advance('Variable or constructor term?');
               assertId();
-              let name = token.id;
+              let name = token.id, iarg;
               if (~parser.tnames.indexOf(name)) error.parser_mismatch('pattern');
               else if (~parser.dnames.indexOf(name)) {
                 let pat = new Pat({patdcon: [ new Name({global: [name]}), [], false ]});
-                argCsr.unshift((argCsr.length ?
+                iarg = argCsr.length ?
                   argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
-                  tr[1].push(new Match({clause: [pat, null]}))) - 1)
+                  tr[1].push(new Match({clause: [pat, null]}))
               } else {
                 let pat = new Pat({patvar: [ new Name({global: [name]}), false ]});
-                argCsr.unshift((argCsr.length ?
+                iarg = argCsr.length ?
                   argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
-                  tr[1].push(new Match({clause: [pat, null]}))) - 1)
+                  tr[1].push(new Match({clause: [pat, null]}))
               }
-              if (argCsr.length === 1) treeCsr.unshift(argCsr[0]);
+              if (argCsr.length === 0) treeCsr.unshift(iarg - 1);
               csr = treeCsr;
               return tr
             }))
         }
         let csr = [], bvs = [];
-        return altMsg('Try Case Tree Statement', () => {
-          let resTree, argCount = 0;
+        return altMsg('Try Case Tree Statement', () => { // TODO: erased patterns
+          function rootArg () { return Promise.resolve().then(() => {
+            advance('Variable or wildcard? (root level)');
+            assertId();
+            let name = token.id;
+            if (~parser.tnames.indexOf(name)) error.parser_mismatch('pattern');
+            else if (~parser.dnames.indexOf(name)) throw new Error('skip');
+            else if (name === '_') bvs.unshift({id: ''});
+            else bvs.unshift(token)
+          }) }
+          let resTree, argCount = 0, splitArg, eps = [];
           advance('Function clause marker?', {value: 'op', id: '@'});
           return (function loop () {
-            return alt(() => {
-              advance('Variable or wildcard? (root level)');
-              assertId();
-              let name = token.id;
-              if (~parser.tnames.indexOf(name)) error.parser_mismatch('pattern');
-              else if (~parser.dnames.indexOf(name)) throw new Error('skip');
-              else if (name === '_') bvs.unshift({id: ''});
-              else bvs.unshift(token)
-            }).catch(() => alt(() => subpat(tree, [], []).then(tr => {
-              resTree = tr;
-              bvs.unshift({id: ''})
-            })))
-              .then(() => {
+            // {x}
+            return enclosure(['braces'], () => rootArg().then(() => true))
+              // x
+              .catch(() => alt(() => rootArg().then(() => false)))
+              // pat *or* (pat)
+              .catch(() => alt(() => subpat(tree, [], []).then(tr => {
+                resTree = tr;
+                splitArg = argCount;
+                bvs.unshift({id: ''})
+              })))
+              .then(ep => {
+                eps.unshift(ep);
                 argCount++;
                 return loop()
               })
@@ -1159,8 +1169,8 @@ var Reason = (options = {}) => {
                 .then(term => {
                   let head = csr.splice(0, 1)[0];
                   csr.reduceRight((a, x) => a[1][x][1], tree)[1][head][1] = term;
-                  if (tree[0] === null) tree[0] = new Term({boundvar: [argCount - 1]});
-                  return [tree, tr => Array(argCount).fill(0).reduce(acc => new Term({lam: [acc, false]}), tr)]
+                  if (tree[0] === null) tree[0] = new Term({boundvar: [argCount - splitArg - 1]});
+                  return [tree, tr => Array(argCount).fill(0).reduce((acc, _, i) => new Term({lam: [acc, eps[i]]}), tr)]
                 })
             })
         })
@@ -1569,7 +1579,7 @@ var Reason = (options = {}) => {
         switch (term.ctor) {
           case 'lam':
           if (typeVal.ctor !== 'vpi') error.tc_lam_mismatch(typeVal.ctor);
-          if (term[1] !== typeVal[2]) error.tc_erasure_mismatch();
+          if (term[1] && !typeVal[2]) error.tc_erasure_mismatch();
           else {
             let local = new Name({local: [index]});
             return check(
