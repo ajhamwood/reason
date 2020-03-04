@@ -1163,16 +1163,20 @@ var Reason = (options = {}) => {
                 argCount++;
                 return loop()
               })
-          })().catch(() => {
-              advance('Pattern equation separator?', {value: 'op', id: ':='});
-              return parseTerm(bvs, 'ann')
-                .then(term => {
-                  let head = csr.splice(0, 1)[0];
-                  csr.reduceRight((a, x) => a[1][x][1], tree)[1][head][1] = term;
-                  if (tree[0] === null) tree[0] = new Term({boundvar: [argCount - splitArg - 1]});
-                  return [tree, tr => Array(argCount).fill(0).reduce((acc, _, i) => new Term({lam: [acc, eps[i]]}), tr)]
-                })
-            })
+          })().catch(() => alt(() => {
+            if (tree[0] === null) tree[0] = new Term({boundvar: [argCount - splitArg - 1]})
+            advance('Pattern equation separator?', {value: 'op', id: ':='});
+            return parseTerm(bvs, 'ann')
+              .then(term => {
+                let head = csr.splice(0, 1)[0];
+                csr.reduceRight((a, x) => a[1][x][1], tree)[1][head][1] = term;
+              })
+          })).catch(() => alt(() => {
+            advance('Absurd pattern marker?', {value: 'op', id: '()'});
+            let head = csr.splice(0, 1)[0],
+                clause = csr.reduceRight((a, x) => a[1][x][1], tree)[1].splice(head, 1)[0];
+            tree[1].push(new Match({absurd: [clause[0]]}))
+          })).then(() => [tree, tr => Array(argCount).fill(0).reduce((acc, _, i) => new Term({lam: [acc, eps[i]]}), tr)])
         })
       }
 
@@ -1359,8 +1363,7 @@ var Reason = (options = {}) => {
           case 'dcon': return parensIf(int1 > 1 + !obj[1].length,
             checkMf(obj, obj[1].map(arg => ` ${(arg[1] ? `{${recPrint(arg[0], 3, int2)}}` : recPrint(arg[0], 2, int2))} `), int2) ||
             recPrint(obj[0], 0, int2) + obj[1].map(arg => ' ' + (arg[1] ? `{${recPrint(arg[0], 3, int2)}}` : recPrint(arg[0], 2, int2))).join(''))
-          case 'case': return recPrint(obj[0], 0, int2) + ' |' +
-            obj[1].map(match => '\n  ' + recPrint(match[0], 0, int2) + ' := ' + recPrint(match[1], 0, int2))
+          case 'case': return recPrint(obj[0], 0, int2) + ' |' + obj[1].map(match => '\n  ' + recPrint(match, 0, int2))
         }
       } else if (testObj(Name)) {
         switch (obj.ctor) {
@@ -1373,6 +1376,11 @@ var Reason = (options = {}) => {
           case 'patbvar': anns[int2 - obj[0] - 1] = 1; return vars(obj[0])
           case 'patdcon': return (obj[2] ? '.' : '') + parensIf(int1 > 1 + !obj[1].length, recPrint(obj[0], 0, int2) +
           obj[1].map(arg => ' ' + (arg[1] ? `{${recPrint(arg[0], 3, int2)}}` : recPrint(arg[0], 2, int2))).join(''))
+        }
+      } else if (testObj(Match)) {
+        switch (obj.ctor) {
+          case 'clause': return recPrint(obj[0], 0, int2) + ' := ' + recPrint(obj[1], 0, int2)
+          case 'absurd': return recPrint(obj[0], 0, int2) + ' ()'
         }
       } else if (testObj(Tele)) {
         return obj.items.map((item, i) => {
@@ -1456,7 +1464,7 @@ var Reason = (options = {}) => {
       case 'case': switch ((vscrut = evaluate(term[0], ctx)).ctor) {
         case 'vfree': return new Value({vcase: [ vscrut, term[1] ]});
         case 'vdcon':
-        let match = term[1].find(match => match[0].ctor !== 'patdcon' || vscrut[0].equal(match[0][0]));
+        let match = term[1].find(match => match.ctor === 'clause' && match[0].ctor !== 'patdcon' || vscrut[0].equal(match[0][0]));
         switch (match[0].ctor) {
           case 'patvar': return evaluate(match[1], ctx.cons(new Decl({def: [ match[0][0], vscrut ]})));
           case 'patbvar': return evaluate(match[1], ctx.cons(new Decl({def: [ new Term({boundvar: [ match[0][0] ]}), vscrut ]})));
@@ -1635,8 +1643,10 @@ var Reason = (options = {}) => {
         case 'tcon': return new Term({tcon: [ term2[0], term2[1].map(tm => subst(term1, tm, ep, index)) ]})
         case 'dcon': return new Term({dcon: [ term2[0],
           term2[1].map(arg => new Arg({arg: [ subst(term1, arg[0], ep, index), arg[1]]})) ].concat([term2[2]].filter(Boolean))})
-        case 'case': return new Term({case: [ subst(term1, term2[0], ep, index),
-          term2[1].map(match => new Match({clause: [ substPat(term1, match[0], ep, index), subst(term1, match[1], ep, index) ]})) ].concat([term2[2]].filter(Boolean))})
+        case 'case': return new Term({case: [ subst(term1, term2[0], ep, index), term2[1].map(match => { switch (match.ctor) {
+          case 'clause': return new Match({clause: [ substPat(term1, match[0], ep, index), subst(term1, match[1], ep, index) ]})
+          case 'absurd': return new Match({absurd: [ substPat(term1, match[0], ep, index) ]})
+        } }) ].concat([term2[2]].filter(Boolean))})
         case 'star': case 'freevar': return term2
       }
     }
@@ -1657,8 +1667,10 @@ var Reason = (options = {}) => {
         case 'tcon': return new Term({tcon: [ term2[0], term2[1].map(tm => unsubst(term1, tm, index)) ]})
         case 'dcon': return new Term({dcon: [ term2[0],
           term2[1].map(arg => new Arg({arg: [ unsubst(term1, arg[0], index), arg[1]]})) ].concat([term2[2]].filter(Boolean))})
-        case 'case': return new Term({case: [ unsubst(term1, term2[0], index),
-          term2[1].map(match => new Match({clause: [ unsubstPat(term1, match[0], index), unsubst(term1, match[1], index) ]})) ].concat([term2[2]].filter(Boolean))})
+        case 'case': return new Term({case: [ unsubst(term1, term2[0], index), term2[1].map(match => { switch (match.ctor) {
+          case 'clause': return new Match({clause: [ unsubstPat(term1, match[0], index), unsubst(term1, match[1], index) ]})
+          case 'absurd': return new Match({absurd: [ unsubstPat(term1, match[0], index) ]})
+        } }) ].concat([term2[2]].filter(Boolean))})
         case 'star': case 'boundvar': return term2
       }
     }
@@ -1679,8 +1691,10 @@ var Reason = (options = {}) => {
         case 'tcon': return new Term({tcon: [ term2[0], term2[1].map(tm => substFV(term1, tm, name)) ]})
         case 'dcon': return new Term({dcon: [ term2[0],
           term2[1].map(arg => new Arg({arg: [ substFV(term1, arg[0], name), arg[1] ]})) ].concat([term2[2]].filter(Boolean))})
-        case 'case': return new Term({case: [ substFV(term1, term2[0], name),
-          term2[1].map(match => new Match({clause: [ match[0], substFV(term1, match[1], name) ]})) ]})
+        case 'case': return new Term({case: [ substFV(term1, term2[0], name), term2[1].map(match => { switch (match.ctor) {
+          case 'clause': return new Match({clause: [ match[0], substFV(term1, match[1], name) ]})
+          case 'absurd': return match
+        } }) ]})
         case 'star': case 'boundvar': return term2
       }
     }
