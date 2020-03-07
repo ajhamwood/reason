@@ -494,11 +494,13 @@ var Reason = (options = {}) => {
         ));
         this[Symbol.iterator] = () => kv[0][1].values();
         ['map', 'every'].forEach(prop => this[prop] = (...args) => kv[0][1][prop](...args))
+        this.traverse = function (fn, locals = {}) { return fn.bind(Object.assign({}, locals))(this) }
       }
     }
   }
 
   class Term extends AST('ann', 'star', 'pi', 'lam', 'app', 'boundvar', 'freevar' ,'tcon', 'dcon', 'case') {
+    traversable = true
     equal (operand) {
       return this.ctor === operand.ctor &&
         this.every((x, i) => x === operand[i] ||
@@ -514,7 +516,7 @@ var Reason = (options = {}) => {
         case 'app': return `${this[0].toString()} :@: ${this[2] ? 'Erased ' : ''}${this[1].toString()}`
         case 'boundvar': return `Bound ${this[0]}`
         case 'freevar': return `Free ${this[0]}`
-        case 'tcon': return `TC:${this[0].toString()}${this[1].map(x => ` (${x.toString()})`).join('')}`
+        case 'tcon': return `TC:${this[0].toString()}${[...this].slice(1, 3).flatMap(x => ` (${x.toString()})`).join('')}` //?
         case 'dcon': return `DC:${this[0].toString()}${this[1].map(x => ` (${x.toString()})`).join('')}`
         case 'case': return `Case ${this[0].toString()} |${this[1].map(x => `\n  ${x.toString()}`).join('')}`
       }
@@ -595,11 +597,13 @@ var Reason = (options = {}) => {
   }
 
   class Arg extends AST('arg') { // Only dcons and patdcons have Args. TODO: ('runtime', 'erased'), replace with Tele/Item?
+    traversable = true
     equal (operand) { return this[0].equal(operand[0]) && this[1] === operand[1] }
     toString () { return (this[1] ? 'Erased ' : '') + this[0].toString() }
   }
 
   class Pat extends AST('patdcon', 'patvar', 'patbvar') {
+    traversable = true
     toString () {
       switch (this.ctor) {
         case 'patdcon': return `${this[2] ? 'Inac' : ''}PatDC:${this[0].toString()}${this[1].map(x => ` (${x.toString()})`).join('')}`
@@ -609,6 +613,7 @@ var Reason = (options = {}) => {
     }
   }
   class Match extends AST('clause', 'absurd') {
+    traversable = true
     toString () {
       switch (this.ctor) {
         case 'clause': return `PatMatch @ ${this[0].toString()} := ${this[1].toString()}`
@@ -979,22 +984,21 @@ var Reason = (options = {}) => {
               advance(`Lambda next variable${ep ? ' (erased)' : ''}?`);
               if (!('id' in token) || 'value' in token) throw new Error('');
               return Promise.resolve({bv: token, ep})
-            },
-            loop = (bv, ep) => alt(() => {
-              bvs.unshift(bv);
-              eps.unshift(ep);
-              advance('Lambda comma?', {value: 'op', id: ','});
-              // x , {y} , ...
-              return enclosure(['braces'], nextVar(true))
-              // x , y , ...
-                .catch(() => alt(nextVar(false)))
-                .then(({bv, ep}) => loop(bv, ep))
-            }).catch(err => { if (!err.message) error.parser_mismatch(token, index) });
+            };
         // {x} ...
         return altMsg('Try Lambda', () => enclosure(['braces'], nextVar(true)))
         // x ...
           .catch(() => alt(nextVar(false)))
-          .then(({bv, ep}) => loop(bv, ep))
+          .then(function loop ({bv, ep}) { return alt(() => {
+            bvs.unshift(bv);
+            eps.unshift(ep);
+            advance('Lambda comma?', {value: 'op', id: ','});
+            // x , {y} , ...
+            return enclosure(['braces'], nextVar(true))
+            // x , y , ...
+              .catch(() => alt(nextVar(false)))
+              .then(loop)
+          }).catch(err => { if (!err.message) error.parser_mismatch(token, index) }) })
           .then(() => {
             advance('Lambda arrow?', {value: 'op', id: '=>'});
             // x , y , .. => term
@@ -1090,7 +1094,7 @@ var Reason = (options = {}) => {
                 if (argCsr.length === 0) treeCsr.unshift(iarg);
                 return patargs(tr, csr = treeCsr, [iarg].concat(argCsr)).then(([res]) => res)
               } // Matching constructor pattern with a fresh name at the given pattern argument (steps into internal node)
-              else if (tr[1][i][0].ctor === 'patvar' && tr[1][i][1].ctor === 'case')
+              else if (tr[1][i][0].ctor === 'patvar' && tr[1][i][1].ctor === 'case') // BUG when case syntax in lex?
                 return patargs(tr[1][i][0], csr = [i].concat(treeCsr), []).then(([res]) => res);
               else { // Matching constructor pattern with a constructor at the given pattern argument (converts leaf node to internal node and steps in)
                 let fvName = new Name({global: [ parser.fresh() ]}), splitClause = tr[1][i],
@@ -1109,7 +1113,7 @@ var Reason = (options = {}) => {
                   iarg = argCsr.length ?
                     argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
                     tr[1].push(new Match({clause: [pat, null]}));
-              if (argCsr.length === 0) treeCsr.unshift(iarg - 1);
+              if (argCsr.length === 0) treeCsr.unshift(ialamrg - 1);
               csr = treeCsr;
               return tr
             })) // t *or* x
@@ -1153,10 +1157,11 @@ var Reason = (options = {}) => {
               // x
               .catch(() => alt(() => rootArg().then(() => false)))
               // pat *or* (pat)
-              .catch(() => alt(() => subpat(tree, [], []).then(tr => {
+              .catch(() => alt(() => subpat(tree, [], []).then(tr => { // {pat} ?
                 resTree = tr;
                 splitArg = argCount;
                 bvs.unshift({id: ''})
+                return false
               })))
               .then(ep => {
                 eps.unshift(ep);
@@ -1634,69 +1639,27 @@ var Reason = (options = {}) => {
 
     // Terms
     function subst (term1, term2, ep, index = 0) {
-      switch (term2.ctor) {
-        case 'ann': return new Term({ann: [ subst(term1, term2[0], ep, index), subst(term1, term2[1], ep, index) ]})
-        case 'pi': return new Term({pi: [ subst(term1, term2[0], ep, index), subst(term1, term2[1], ep, index + 1), term2[2] ]})
-        case 'lam': return new Term({lam: [ subst(term1, term2[0], ep, index + 1), term2[1] ]})
-        case 'app': return new Term({app: [ subst(term1, term2[0], ep, index), subst(term1, term2[1], ep, index), term2[2] ]})
-        case 'boundvar': return index !== term2[0] ? term2 : !ep ? term1 : error.tc_erased_var_subst()
-        case 'tcon': return new Term({tcon: [ term2[0], term2[1].map(tm => subst(term1, tm, ep, index)) ]})
-        case 'dcon': return new Term({dcon: [ term2[0],
-          term2[1].map(arg => new Arg({arg: [ subst(term1, arg[0], ep, index), arg[1]]})) ].concat([term2[2]].filter(Boolean))})
-        case 'case': return new Term({case: [ subst(term1, term2[0], ep, index), term2[1].map(match => { switch (match.ctor) {
-          case 'clause': return new Match({clause: [ substPat(term1, match[0], ep, index), subst(term1, match[1], ep, index) ]})
-          case 'absurd': return new Match({absurd: [ substPat(term1, match[0], ep, index) ]})
-        } }) ].concat([term2[2]].filter(Boolean))})
-        case 'star': case 'freevar': return term2
-      }
-    }
-    function substPat (term, pat, ep, index) {
-      switch (pat.ctor) {
-        case 'patvar': return pat
-        case 'patbvar': return index !== pat[0] ? pat : !ep ? new Pat({patvar: [term[0], false]}) : error.tc_erased_var_subst()
-        case 'patdcon': return new Pat({patdcon: [ pat[0], pat[1].map(arg => new Arg({arg: [ substPat(term, arg[0], ep, index), arg[1] ]})), pat[2] ]})
-      }
+      return term2.traverse(function (tm) {
+        if (tm.constructor === Term && tm.ctor === 'boundvar' && this.index === tm[0]) return ep ? error.tc_erased_var_subst() : term1
+        if (tm.constructor === Pat && tm.ctor === 'patbvar' && this.index === tm[0]) return ep ? error.tc_erased_var_subst() : new Pat({patvar: [term1[0], false]})
+        return new tm.constructor({ [tm.ctor]: tm.map((v, i) => v.traversable ? subst(term1, v, ep, this.index +
+          ((tm.ctor === 'pi' && i === 1) || (tm.ctor === 'lam' && i === 0))) : Array.prototype.isPrototypeOf(v) ? v.map(w => subst(term1, w, ep, this.index)) : v) })
+      }, { index })
     }
     function unsubst (term1, term2, index = 0) {
-      switch (term2.ctor) {
-        case 'ann': return new Term({ann: [ unsubst(term1, term2[0], index), unsubst(term1, term2[1], index) ]})
-        case 'pi': return new Term({pi: [ unsubst(term1, term2[0], index), unsubst(term1, term2[1], index + 1), term2[2] ]})
-        case 'lam': return new Term({lam: [ unsubst(term1, term2[0], index + 1), term2[1] ]})
-        case 'app': return new Term({app: [ unsubst(term1, term2[0], index), unsubst(term1, term2[1], index), term2[2] ]})
-        case 'freevar': return term2[0].ctor === 'local' && index === term2[0][0] ? term1 : term2
-        case 'tcon': return new Term({tcon: [ term2[0], term2[1].map(tm => unsubst(term1, tm, index)) ]})
-        case 'dcon': return new Term({dcon: [ term2[0],
-          term2[1].map(arg => new Arg({arg: [ unsubst(term1, arg[0], index), arg[1]]})) ].concat([term2[2]].filter(Boolean))})
-        case 'case': return new Term({case: [ unsubst(term1, term2[0], index), term2[1].map(match => { switch (match.ctor) {
-          case 'clause': return new Match({clause: [ unsubstPat(term1, match[0], index), unsubst(term1, match[1], index) ]})
-          case 'absurd': return new Match({absurd: [ unsubstPat(term1, match[0], index) ]})
-        } }) ].concat([term2[2]].filter(Boolean))})
-        case 'star': case 'boundvar': return term2
-      }
+      return term2.traverse(function (tm) {
+        if (tm.constructor === Term && tm.ctor === 'freevar' && tm[0].ctor === 'local' && this.index === tm[0][0]) return term1
+        if (tm.constructor === Pat && tm.ctor !== 'patdcon' && tm[0].ctor === 'local'  && this.index === tm[0][0]) return new Pat({patvar: [term1[0]]})
+        return new tm.constructor({ [tm.ctor]: tm.map((v, i) => v.traversable ? unsubst(term1, v, this.index +
+          ((tm.ctor === 'pi' && i === 1) || (tm.ctor === 'lam' && i === 0))) : Array.prototype.isPrototypeOf(v) ? v.map(w => unsubst(term1, w, this.index)) : v) })
+      }, { index })
     }
-    function unsubstPat (term, pat, index) {
-      switch (pat.ctor) {
-        case 'patbvar': case 'patvar': return pat[0].ctor === 'local' && index === pat[0][0] ? new Pat({patbvar: [term[0]]}) : pat
-        case 'patdcon': return new Pat({patdcon: [ pat[0], pat[1].map(arg => new Arg({arg: [ unsubstPat(term, arg[0], index), arg[1] ]})), pat[2] ]})
-      }
-    }
-
-    function substFV (term1, term2, name) { // name must be a freevar
-      switch (term2.ctor) {
-        case 'ann': return new Term({ann: [ substFV(term1, term2[0], name), substFV(term1, term2[1], name) ]})
-        case 'pi': return new Term({pi: [ substFV(term1, term2[0], name), substFV(term1, term2[1], name), term2[2] ]})
-        case 'lam': return new Term({lam: [ substFV(term1, term2[0], name), term2[1] ]})
-        case 'app': return new Term({app: [ substFV(term1, term2[0], name), substFV(term1, term2[1], name), term2[2] ]})
-        case 'freevar': return name.equal(term2) ? term1 : term2
-        case 'tcon': return new Term({tcon: [ term2[0], term2[1].map(tm => substFV(term1, tm, name)) ]})
-        case 'dcon': return new Term({dcon: [ term2[0],
-          term2[1].map(arg => new Arg({arg: [ substFV(term1, arg[0], name), arg[1] ]})) ].concat([term2[2]].filter(Boolean))})
-        case 'case': return new Term({case: [ substFV(term1, term2[0], name), term2[1].map(match => { switch (match.ctor) {
-          case 'clause': return new Match({clause: [ match[0], substFV(term1, match[1], name) ]})
-          case 'absurd': return match
-        } }) ]})
-        case 'star': case 'boundvar': return term2
-      }
+    function substFV (term1, term2, name) {
+      return term2.traverse(function (tm) {
+        if (tm.constructor === Term && tm.ctor === 'freevar' && this.name.equal(tm)) return term1
+        return new tm.constructor({ [tm.ctor]: tm.map((v, i) => v.traversable && ~(tm.constructor === Match && i === 0) ? substFV(term1, v, this.name) :
+          Array.prototype.isPrototypeOf(v) ? v.map(w => substFV(term1, w, this.name)) : v) })
+      }, { name })
     }
 
     // Telescopes
@@ -1904,7 +1867,7 @@ var Reason = (options = {}) => {
       }
     }
 
-    function exhaustivityCheck (ctx, term, type, pats) {
+    function exhaustivityCheck (ctx, term, type, pats) { // coverage
       function checkImpossible (cdefs) {
         return cdefs.reduce((p, cdef) => p.then(acc =>
           tcTele(ctx, new Tele(...substTele(ctx, result.ddef[0].concat(result.ddef[1]), type[1], cdef[1]))) //why not cdef[1].tail()?
@@ -1969,6 +1932,22 @@ var Reason = (options = {}) => {
       return Promise.resolve()
     }
 
+    function terminationCheck (ctx, name, term) {
+      // term.traverse(function (tm) {
+      //   if (tm.ctor === 'case') {
+      //     if (tm[0].equal(new Term({freevar: [name]}))) {
+      //       tm[0].traverse(function (cstm) {
+      //
+      //       });
+      //     } else {
+      //       tm[1].forEach(clause => {
+      //
+      //       })
+      //     }
+      //   }
+      // })
+    }
+
     // Main typecheck
     return decls.reduce((p, decl) => p.then(acc => {
       if (debug.typechecker || debug.parsedDecl) log('typechecking...', decl.toString(), ...(decl.ctor === 'data' ? [] : [decl[1].print()]));
@@ -1996,6 +1975,7 @@ var Reason = (options = {}) => {
           let mbType = context.lookup(name, 'sig');
           return (typeof mbType === 'undefined') ?
             infer(args = {ctx: context, term: info}).then(type => {
+              terminationCheck(context, name, args.term);
               let typeTerm = quote(type);
               if (typeof name[0] !== 'number') {
                 console.log(print(name), ':', print(typeTerm));
@@ -2005,6 +1985,7 @@ var Reason = (options = {}) => {
               return acc.concat([{declName: 'def', type: typeTerm, term: args.term}])
             }) :
             check(context, info, mbType).then(({term, type}) => {
+              terminationCheck(context, name, term);
               if (typeof name[0] !== 'number') console.log(print(name), ':=', print(term));
               context.extend(new Decl({def: [name, evaluate(term)]}));
               return acc.concat([{declName: 'def', type: quote(type), term}])
