@@ -138,20 +138,22 @@ var Reason = (options = {}) => {
 
   class Data {
     constructor (nameString, ddef, cdefs, converters = {}) {
-      let nameFix = str => str.match(/^(([a-zA-Z][a-zA-Z0-9]*[\']*)\s.*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r)[\d]{0,3}))?$/).slice(1).filter(Boolean);
-      let [name, aux] = nameFix(nameString).filter(Boolean);
+      let rx_ddef = /^(([a-zA-Z][a-zA-Z0-9]*[\']*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r)[\d]{0,3}))?\s.*)$/,
+          rx_cdef = /^(([a-zA-Z][a-zA-Z0-9]*[\']*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r)[\d]{0,3}))?\s+(:\s+.*))$/,
+          nameFix = (str, flag) => str.match(flag ? rx_ddef : rx_cdef).slice(1).filter(Boolean),
+          [name, aux] = nameFix(nameString, true).filter(Boolean);
       name = name || fixName;
       wait('data', name);
-      let readyDecl = false, ctorNames = cdefs.map(cdef => typeof cdef === 'string' ? [...nameFix(cdef), {}] :
-            Object.entries(cdef)[0].flatMap((x, i) => i ? x : nameFix(x))),
+      let readyDecl = false, ctorNames = cdefs.map(cdef => typeof cdef === 'string' ? [...nameFix(cdef, false), {}] :
+            Object.entries(cdef)[0].flatMap((x, i) => i ? x : nameFix(x, false))),
           { fromJS = () => {}, ...dConverters } = converters, fromJSThis = {}, root,
           jsTerm = ctorNames.reduce((a, x) => Object.assign(a, { [x[0].match(/\w+/) ? x[0].toLowerCase() : x[0]]: () => error.unchecked(name) }),
             { appliedTerms: [], ...dConverters });
       // Data(name, tcon, [dcons], {...converters})
       // Data(name, tcon, [{dcons}], {...converters})
       sequence(() => cdefs.reduce(
-        (p, cdef, i) => p.then(acc => tokenise({sourceString: ctorNames[i][0]})
-          .then(lex => parse(lex, 'cdef', {fixity: ctorNames[i][1]}))
+        (p, cdef, i) => p.then(acc => tokenise({name: ctorNames[i][1], sourceString: ctorNames[i].slice(-2)[0]})
+          .then(lex => parse(lex, 'cdef', ctorNames[i].length === 5 ? {fixity: ctorNames[i][2]} : {}))
           .then(res => (acc[0][3].push(res[0]), acc))),
         tokenise({name, sourceString: ddef}).then(lex => parse(lex, 'ddef', {fixity: aux})))
         .then(decls => typecheck(decls, context))
@@ -356,10 +358,11 @@ var Reason = (options = {}) => {
   }
 
   function tokenise ({name, sourceString}) {
-    let rx_token = /^((\s+)|([a-zA-Z][a-zA-Z0-9]*[\']*|_)(?=\s+|[(){}"]|$)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?|\(\))|(0|-?[1-9][0-9]*)|([(){}"]))(.*)$/,
+    let rx_token = /^((\s+)|([a-zA-Z][a-zA-Z0-9]*[\']*|_)(?=\s+|[(){}"]|$)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?|\(\))(\s+(?:l|r|n)[\d]{0,3})?|(0|-?[1-9][0-9]*)|([(){}"]))(.*)$/,
         rx_digits = /^([0-9]+)(.*)$/,
         rx_hexs = /^([0-9a-fA-F]+)(.*)$/,
-        source = sourceString, tokens = name ? [{id: name, value: 'name'}] : [], index = 0, word, char;
+        source = sourceString, tokens = name ? [{id: name, value: 'name'}] : [], index = 0, word, char,
+        reserved = [':', '->', ',', '=>', '@', ':=', '|'];
 
     function alt (fn) {
       let rewind = index;
@@ -453,12 +456,12 @@ var Reason = (options = {}) => {
         if (!result) return err(['lexer_unexpected', source[0], null, index]);
         word = result[1];
         index += word.length;
-        source = result[7];
+        source = result[8];
 
-        if (result[3]) acc.add({id: word});
+        if (result[3] || (result[4] && !~reserved.indexOf(result[4]))) acc.add({id: word});
         else if (result[4]) acc.add({id: word, value: 'op'});
-        else if (result[5]) return num().right(lex);
-        else if (result[6]) {
+        else if (result[6]) return num().right(lex);
+        else if (result[7]) {
           if (word === '"') return string().right(lex);
           else acc.add({id: word, value: 'punc'})
         }
@@ -752,7 +755,6 @@ var Reason = (options = {}) => {
             case 'cdef': return altNames(arg => {
               // name : bindings type (?)
               advance('Constructor definition?');
-              assertId();
               let name = token.id;
               if (name.match(/_/)) arg.mixfixes.push([name, parseOptions.fixity]);
               arg.dnames.push(name);
@@ -1067,17 +1069,17 @@ var Reason = (options = {}) => {
           let retTr, argCount = 0;
           return (function loop() {
             // {x}
-            return enclosure(['braces'], () => subpat(tr, treeCsr, argCsr).then(res => [res, true]))
+            return enclosure(['braces'], () => subpat(tr, treeCsr, argCsr, argCount).then(res => [res, true]))
               // x
-              .catch(() => alt(() => subpat(tr, treeCsr, argCsr).then(res => [res, false])))
+              .catch(() => alt(() => subpat(tr, treeCsr, argCsr, argCount).then(res => [res, false])))
               .then(([trx, ep]) => {
                 retTr = trx;
                 argCount++;
                 return loop()
               })
-          })().catch(() => [retTr, treeCsr, argCsr, argCount])
+          })().catch(() => [retTr, treeCsr, argCount])
         }
-        function subpat (tr, treeCsr, argCsr) {
+        function subpat (tr, treeCsr, argCsr, argCount) {
           // (pat)
           return enclosure(['parens'], () => {
             advance('Constructor term?');
@@ -1087,53 +1089,79 @@ var Reason = (options = {}) => {
             else if (~parser.dnames.indexOf(name)) {
               let i = tr[1].findIndex(match => match[0].ctor === 'patdcon' && match[0][0][0] === name);
               if (!~i) { // New constructor pattern (creates leaf node)
-                let pat = new Pat({patdcon: [ new Name({global: [name]}), [], false ]}),
-                    iarg = (argCsr.length ?
-                      argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
-                      tr[1].push(new Match({clause: [pat, null]}))) - 1;
-                if (argCsr.length === 0) treeCsr.unshift(iarg);
-                return patargs(tr, csr = treeCsr, [iarg].concat(argCsr)).then(([res]) => res)
+                let iarg, pat = new Pat({patdcon: [ new Name({global: [name]}), [], false ]});
+                if (treeCsr.length) {
+                  tr[1][treeCsr[0][1]][1] = new Term({case: [ null, [] ]});
+                  return patargs(tr[1][treeCsr[0][1]][1], treeCsr, [])
+                } else {
+                  iarg = (argCsr.length ?
+                    argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
+                    tr[1].push(new Match({clause: [pat, null]}))) - 1;
+                  if (!argCsr.length) treeCsr.unshift([argCount, iarg]);
+                  return patargs(tr, csr = treeCsr, [iarg].concat(argCsr))
+                }
               } // Matching constructor pattern with a fresh name at the given pattern argument (steps into internal node)
-              else if (tr[1][i][0].ctor === 'patvar' && tr[1][i][1].ctor === 'case') // BUG when case syntax in lex?
-                return patargs(tr[1][i][0], csr = [i].concat(treeCsr), []).then(([res]) => res);
+              else if (tr[1][i][1].ctor === 'patvar' && tr[1][i][1].ctor === 'case') // BUG when case syntax in lex?
+                return patargs(tr[1][i][1], csr = [[argCount, i]].concat(treeCsr), []);
               else { // Matching constructor pattern with a constructor at the given pattern argument (converts leaf node to internal node and steps in)
                 let fvName = new Name({global: [ parser.fresh() ]}), splitClause = tr[1][i],
                     splitPatArg = splitClause[0][1].splice(argCsr[0], 1, new Arg({arg: [ new Pat({patvar: [fvName]}), false ]}))[0][0]; // erasure?
                 tr[1][i] = new Match({clause: [ splitClause[0],
                   new Term({case: [ new Term({freevar: [fvName]}), [ new Match({clause: [ splitPatArg, splitClause[1] ]}) ] ]})
                 ]});
-                return patargs(tr[1][i][1], csr = [i].concat(treeCsr), [])
-                  .then(([res, _1, _2, argCount]) => Array(argCount - 1).fill(0).reduce(acc => new Term({lam: [acc, false]}), res))
+                return patargs(tr[1][i][1], csr = [[argCount, i]].concat(treeCsr), [])
+                  .then(([res, _, argCount]) => Array(argCount - 1).fill(0).reduce(acc => new Term({lam: [acc, false]}), res))
               }
             } else throw new Error('')
           }) // _
-            .catch(() => alt(() => { // or parens
+            .catch(() => alt(() => { // or braces
               advance('Wildcard?', {id: '_'});
               let pat = new Pat({patvar: [ new Name({global: [parser.fresh()]}), false ]}),
                   iarg = argCsr.length ?
                     argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
                     tr[1].push(new Match({clause: [pat, null]}));
-              if (argCsr.length === 0) treeCsr.unshift(ialamrg - 1);
+              if (argCsr.length === 0) treeCsr.unshift([argCount, iarg - 1]);
               csr = treeCsr;
               return tr
             })) // t *or* x
-            .catch(() => alt(() => { // or parens
+            .catch(() => alt(() => { // or braces
               advance('Variable or constructor term?');
               assertId();
               let name = token.id, iarg;
               if (~parser.tnames.indexOf(name)) error.parser_mismatch('pattern');
               else if (~parser.dnames.indexOf(name)) {
                 let pat = new Pat({patdcon: [ new Name({global: [name]}), [], false ]});
-                iarg = argCsr.length ?
-                  argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
-                  tr[1].push(new Match({clause: [pat, null]}))
+                if (treeCsr.length) {
+                  if (tr[1][treeCsr[0][1]][1] === null) {
+                    tr[1][treeCsr[0][1]][1] = new Term({case: [ null, [ new Match({clause: [pat, null]}) ] ]});
+                    treeCsr.unshift([argCount, 0]);
+                  } else {
+                    let i = tr[1][treeCsr[0][1]][1][1].findIndex(match => match[0].ctor === 'patdcon' && match[0][0][0] === name);
+                    log('here', treeCsr, tr, i)
+                    if (!~i) { // leaf node
+                      iarg = tr[1][treeCsr[0][1]][1][1].push(new Match({clause: [pat, null]}));
+                      treeCsr.unshift([argCount, iarg - 1]);
+                    } // internal node
+                    else treeCsr.unshift([argCount, i])
+                  }
+                  return tr[1][treeCsr[1][1]][1]
+                } else {
+                  let i = tr[1].findIndex(match => match[0].ctor === 'patdcon' && match[0][0][0] === name);
+                  log('hello', treeCsr, tr, i);
+                  if (!~i) {
+                    iarg = argCsr.length ?
+                      argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
+                      tr[1].push(new Match({clause: [pat, null]}))
+                    treeCsr.unshift([argCount, iarg - 1])
+                  } else treeCsr.unshift([argCount, i]);
+                }
               } else {
                 let pat = new Pat({patvar: [ new Name({global: [name]}), false ]});
                 iarg = argCsr.length ?
                   argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
                   tr[1].push(new Match({clause: [pat, null]}))
+                treeCsr.unshift([argCount, iarg - 1]);
               }
-              if (argCsr.length === 0) treeCsr.unshift(iarg - 1);
               csr = treeCsr;
               return tr
             }))
@@ -1143,39 +1171,79 @@ var Reason = (options = {}) => {
           function rootArg () { return Promise.resolve().then(() => {
             advance('Variable or wildcard? (root level)');
             assertId();
-            let name = token.id;
+            let name = token.id, iarg;
             if (~parser.tnames.indexOf(name)) error.parser_mismatch('pattern');
             else if (~parser.dnames.indexOf(name)) throw new Error('skip');
-            else if (name === '_') bvs.unshift({id: ''});
-            else bvs.unshift(token)
+            else {
+              let pat = new Pat({patvar: [ new Name({global: [null]}), false ]});
+              if (name === '_') {
+                bvs.unshift({id: ''});
+                pat[0][0] = parser.fresh()
+              } else {
+                bvs.unshift(token)
+                pat[0][0] = name
+              }
+              if (treeCsr.length) {
+                if (resTree[1][treeCsr[0][1]][1] === null) {
+                  resTree[1][treeCsr[0][1]][1] = new Term({case: [ null, [ new Match({clause: [pat, null]}) ] ]});
+                  treeCsr.unshift([argCount, 0]);
+                } else {
+                  let i = resTree[1][treeCsr[0][1]][1][1].findIndex(match => match[0].ctor === 'patvar' && match[0][0][0] === name); // BUG: should fold patvars together
+                  log('here!', treeCsr, resTree, i)
+                  if (!~i) { // leaf node
+                    iarg = resTree[1][treeCsr[0][1]][1][1].push(new Match({clause: [pat, null]}));
+                    treeCsr.unshift([argCount, iarg - 1]);
+                  } // internal node
+                  else treeCsr.unshift([argCount, i])
+                }
+                csr = treeCsr;
+                return resTree[1][treeCsr[1][1]][1]
+              }
+              else {
+                let i = resTree[1].findIndex(match => match[0].ctor === 'patvar' && match[0][0] === name); // BUG: should fold patvars together
+                if (!~i) {
+                  iarg = resTree[1].push(new Match({clause: [pat, null]}));
+                  treeCsr.unshift([argCount, iarg - 1])
+                } else treeCsr.unshift([argCount, i]);
+                csr = treeCsr;
+                return resTree
+              }
+            }
           }) }
-          let resTree, argCount = 0, splitArg, eps = [];
+          let resTree, treeCsr = [], argCount = 0, eps = [];
           advance('Function clause marker?', {value: 'op', id: '@'});
           return (function loop () {
             // {x}
-            return enclosure(['braces'], () => rootArg().then(() => true))
+            return enclosure(['braces'], () => rootArg().then(tr => [tr, true]))
               // x
-              .catch(() => alt(() => rootArg().then(() => false)))
+              .catch(() => alt(() => rootArg().then(tr => [tr, false])))
               // pat *or* (pat)
-              .catch(() => alt(() => subpat(tree, [], []).then(tr => { // {pat} ?
-                resTree = tr;
-                splitArg = argCount;
+              .catch(() => alt(() => subpat(tree, treeCsr, [], argCount).then(tr => { // {pat} ?
                 bvs.unshift({id: ''})
-                return false
+                return [tr, false]
               })))
-              .then(ep => {
+              .then(([tr, ep]) => {
+                resTree = tr;
                 eps.unshift(ep);
                 argCount++;
                 return loop()
               })
           })().catch(() => alt(() => {
-            if (tree[0] === null) tree[0] = new Term({boundvar: [argCount - splitArg - 1]})
             advance('Pattern equation separator?', {value: 'op', id: ':='});
             return parseTerm(bvs, 'ann')
               .then(term => {
-                let head = csr.splice(0, 1)[0];
-                csr.reduceRight((a, x) => a[1][x][1], tree)[1][head][1] = term;
-              })
+                csr.reverse();
+                log('csr', csr.slice())
+                let head = csr.pop(),
+                    lhs = csr.reduceRight((a, x) => {
+                      log('inred', a, x)
+                      if (a[0] === null) a[0] = new Term({boundvar: [x[0]]});
+                      return a[1][x[1]][1]
+                    }, tree);
+                lhs[1][head[1]][1] = term;
+                if (lhs[0] === null) lhs[0] = new Term({boundvar: [head[0]]});
+                log('casetree end', tree)
+              }).catch(e=>{log("e",e);throw e})
           })).catch(() => alt(() => {
             advance('Absurd pattern marker?', {value: 'op', id: '()'});
             let head = csr.splice(0, 1)[0],
@@ -1933,19 +2001,18 @@ var Reason = (options = {}) => {
     }
 
     function terminationCheck (ctx, name, term) {
-      // term.traverse(function (tm) {
-      //   if (tm.ctor === 'case') {
-      //     if (tm[0].equal(new Term({freevar: [name]}))) {
-      //       tm[0].traverse(function (cstm) {
-      //
-      //       });
-      //     } else {
-      //       tm[1].forEach(clause => {
-      //
-      //       })
-      //     }
-      //   }
-      // })
+      term.traverse(function (tm) {
+        if (tm.ctor === 'case') {
+          tm[1].forEach(clause => {
+            let matrixArgs = []
+            return clause.traverse(function (cstm) {
+              if (tm[0].equal(new Term({freevar: [name]}))) {
+
+              }
+            })
+          })
+        }
+      })
     }
 
     // Main typecheck
@@ -2030,8 +2097,8 @@ var Reason = (options = {}) => {
 
   // API
 
-  const setOptions = opts => { Object.assign(options, opts); debug = options.debug, printer = options.printer },
-        R = { Data, Sig, Def, setOptions, context },
+  const setOptions = opts => { Object.assign(options, opts); debug = options.debug || {}, printer = options.printer || {} },
+        R = { Data, Sig, Def, setOptions, context, parser },
         sequence = (p => fn => p = fn ? p.then(fn) : p)(Promise.resolve());
   Object.defineProperty(R, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))) } }); // TODO: make all props read-only
 
