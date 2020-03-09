@@ -44,8 +44,10 @@
       font-style: normal
     }
     body {
+      margin: 0;
+      background: url(images/bg.png) }
+    main {
       margin: 4vh 25vw 0 15vw;
-      background: url(images/bg.png);
       min-height: calc(100vh - 8vmin);
       color: #fff;
       font-size: 18px;
@@ -81,7 +83,7 @@
       width: 100%;
       height: 100%;
       border: 0 }
-    .cut-in {
+    body:not(.expanded) .cut-in {
       margin: 4vh -15vw 27vh 4vw;
       --top: 15rem;
       --width: 35vw;
@@ -94,7 +96,9 @@
       shape-outside: polygon(0 var(--top), var(--width) var(--top), var(--width) var(--bottom), 0 var(--bottom));
       clip-path: polygon(0 0, var(--width) 0, var(--width) calc(var(--bottom) - var(--top)), 0 calc(var(--bottom) - var(--top)))
     }
-    a {}
+    a {
+      color: inherit;
+      text-decoration: inherit }
     strong {}
     em {}
     code {
@@ -110,7 +114,34 @@
       background: #fff2;
       font-family: 'univers';
       font-variant-ligatures: none;
-      padding: .4rem }
+      padding: .4rem;
+      word-break: break-all }
+    .expand, .collapse {
+      position: relative;
+      bottom: calc(1.2rem + 10px);
+      right: 5px;
+      height: 1.2rem;
+      fill: #fff;
+      display: none;
+      cursor: pointer;
+      float: right }
+    [data-active='active'] { display: block }
+    body.expanded { overflow: hidden }
+    body.expanded > main {
+      width: calc(50% - 3rem);
+      overflow-y: auto;
+      height: 100vh;
+      margin: 0;
+      padding: 0 1.5rem }
+    body.expanded aside {
+      position: fixed;
+      top: 0;
+      right: 0;
+      margin: 0;
+      width: 50%;
+      height: 100% }
+    body.expanded aside { display: none }
+    body.expanded aside.active { display: block }
   </style>
   <script src='reason.js' defer></script>
   <script src='machine.js'></script>
@@ -118,7 +149,7 @@
 <body>
   <main>
     <section>
-      <h1>reason.js</h1>
+      <h1><a href='https://github.com/ajhamwood/reason'>reason.js</a></h1>
       <p>A library for dependent types in Javascript, with the power to formally verify properties on typed objects.</p>
     </section>
   </main>
@@ -157,8 +188,8 @@
             margin: 0;
             outline: 0;
             background: transparent;
-            min-height: 5vh;
-            max-height: 85vh;
+            min-height: 1.6rem;
+            max-height: calc(100vh - 22px - 2rem);
             resize: vertical;
             font-size: inherit;
             font-family: 'univers';
@@ -189,7 +220,7 @@
         <script type="text/javascript" defer>
           let sourceTextbox = document.getElementById('source'),
               logDiv = document.getElementById('log'),
-              runButton = document.getElementById('run');
+              runButton = document.getElementById('run'),
               adjustHeight = () => logDiv.style.height = window.innerHeight - 23 - sourceTextbox.offsetHeight + 'px',
               log = (...args) => {
                 logDiv.childNodes.length && logDiv.appendChild(document.createElement('hr'));
@@ -210,7 +241,15 @@
   ></template>
   <template id='section'
     ><section>
-      <aside><iframe></iframe></aside>
+      <aside>
+        <iframe></iframe>
+        <svg class='expand' viewBox="0 0 1000 1000" data-active='active'>
+          <path d="M310.1,990H10V689.9l98-98v220.5l196-196l79.6,79.6l-196,196h220.5L310.1,990z M990,689.9V990H689.9l-98-98h220.5l-196-196l79.6-79.6l196,196V591.9L990,689.9z M689.9,10H990v300.1l-98,98V187.6l-196,196L616.4,304l196-196H591.9L689.9,10z M10,310.1V10h300.1l98,98H187.6l196,196L304,383.6l-196-196v220.5L10,310.1z"/>
+        </svg>
+        <svg class='collapse' viewBox="0 0 1000 1000" data-active=''>
+          <path d="M893.2,403.2H596.8V106.8L693.6,10v217.8L887.2,34.2l78.6,78.6L772.2,306.4H990L893.2,403.2z M403.2,106.8v296.4H106.8L10,306.4h217.8L34.2,112.8l78.6-78.6l193.6,193.6V10L403.2,106.8z M106.8,596.8h296.4v296.4L306.4,990V772.2L112.8,965.8l-78.6-78.6l193.6-193.6H10L106.8,596.8z M596.8,893.2V596.8h296.4l96.8,96.8l-217.8,0l193.6,193.6l-78.6,78.6L693.6,772.2V990L596.8,893.2z"/>
+        </svg>
+      </aside>
     </section
   ></template>
   <script>
@@ -689,12 +728,31 @@ var app = new $.Machine({
 $.targets({
   app: { 'load-editors' () {
     this.sections.forEach(([p, source, cutin]) => {
-      let section = $.load('section', 'main')[0][0];
+      let section = $.load('section', 'main')[0][0], body = $('body')[0];
       write(p, section);
       if (typeof source === 'string' && source.length) {
         $('iframe', section)[0].srcdoc = $('template#editor')[0].innerHTML.replace(/\[\]/g, source);
         if (cutin) $('aside', section)[0].classList.add('cut-in');
       } else $('aside', section)[0].remove();
+      new IntersectionObserver(entries => entries.forEach(entry => {
+        if (entry.intersectionRatio * section.clientHeight / window.innerHeight > .5) {
+          $('aside.active').forEach(el => el.classList.remove('active'));
+          $('aside', section)[0].classList.add('active')
+        }
+      }), { root: body, threshold: Array.from(Array(21), (_, i) => i / 20) }).observe(section);
+      $.queries({'.expand': { click () {
+        let loc = (scrollY - section.offsetTop) / section.clientHeight;
+        $('.expand').forEach(el => el.dataset.active = '')
+        $('.collapse').forEach(el => el.dataset.active = 'active');
+        body.classList.add('expanded');
+        $('main')[0].scrollTo(0, section.offsetTop + loc * section.clientHeight)
+      } }, '.collapse': { click () {
+        let loc = ($('main')[0].scrollTop - section.offsetTop) / section.clientHeight;
+        $('.expand').forEach(el => el.dataset.active = 'active');
+        $('.collapse').forEach(el => el.dataset.active = '');
+        body.classList.remove('expanded');
+        scrollTo(0, section.offsetTop + loc * section.clientHeight)
+      } } }, section);
     })
   } }
 });
