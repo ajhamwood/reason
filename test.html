@@ -128,6 +128,8 @@
     //
     // console.log(`%conePlusOne =`, 'font-weight: bold; color: deeppink', onePlusOne.result.print());
     //
+    // // TODO: R.Def with fixity
+    //
     // // half = new R.Sig(
     // //   "half", "Nat -> Nat" ).Def({
     // //   "x | x":
@@ -144,7 +146,7 @@
     //   "@ (S  Z)    := Z",
     //   "@ (S (S m)) := S (half m)" ]).ready
     //
-    // console.log((await half(plus(onePlusOne, onePlusOne)).ready).result.toString())
+    // // console.log((await half(plus(onePlusOne, onePlusOne)).ready).result.toString())
     //
     List = new R.Data(
       "List", "(A : Type) : Type",
@@ -152,10 +154,10 @@
         { "_::_ r8 : A -> List A -> List A":
           { toString () { return '[ ' + (this[1].name === "_::_" ? this[0].toString() + ', ' + this[1].toString().slice(2) : this[0].toString() + ' ]') },
             valueOf () { return [ this[0].valueOf() ].concat(this[1].valueOf()) } } } ],
-      { fromJS (v) { let p = () => v.length ? this.cons(this.a.fromJS(v.shift()), p()) : this.nil(); return p() } } );
+      { fromJS (v) { let p = () => v.length ? this['_::_'](this.a.fromJS(v.shift()), p()) : this['[]'](); return p() } } );
 
     await R.ready;
-
+    //
     // let a = await plus(Nat().s(Nat().s(Nat().z()))).ready;
     // console.log(a, a.result.print())
     // let b = await a(Nat().s(Nat().z())).ready;
@@ -164,16 +166,16 @@
     //
     // listNat = List(Nat());
     // console.log(listNat);
-    // theList = listNat.cons(Nat().z(), listNat.cons(Nat().s(Nat().z()), listNat.nil()));
+    // theList = listNat['_::_'](Nat().z(), listNat['_::_'](Nat().s(Nat().z()), listNat['[]']()));
     // console.log(theList, theList.toString(), theList.valueOf());
     // let list3 = await List(Bool()).fromJS([false, false, true, false]).ready;
     // console.log(list3.valueOf(), list3.type.print())
     //
     //
-    // listMap = new R.Sig(
-    //   "listMap", "{A B : Type} -> (A -> B) -> List A -> List B" ).Def(
-    //   [ "@ {_} {_} f  Nil        := Nil", // {A B} ?
-    //     "@ {A} {B} f (Cons a as) := Cons (f a) (listMap {A} {B} f as)" ]); // TODO: allow erased terms to not be written, ie listMap f ys
+    listMap = new R.Sig(
+      "listMap", "{A B : Type} -> (A -> B) -> List A -> List B" ).Def(
+      [ "@ {_} {_} f  Nil        := Nil", // {A B} ?
+        "@ {A} {B} f (Cons a as) := Cons (f a) (listMap {A} {B} f as)" ]); // TODO: allow erased terms to not be written, ie listMap f ys
     //
     // allAddTwo = new R.Sig(
     //   "allAddTwo", "List Nat -> List Nat"  ).Def(
@@ -190,14 +192,14 @@
     //     "@ {_} Nil xs := xs",
     //     "@ {A} (Cons a as) xs := (++) {A} as (Cons a xs)" ]);
     //
-
-    let braid = new R.Sig(
-      "braid", "{A : Type} -> List A -> List A -> List A" ).Def([
-        "@  []          []         := []",
-        "@  []         (_::_ y ys) := y :: ys",
-        "@ (_::_ x xs)  []         := x :: xs",
-        "@ (_::_ x xs) (_::_ y ys) := x :: (y :: (braid xs ys))" ])
-
+    //
+    // let braid = new R.Sig(
+    //   "braid", "{A : Type} -> List A -> List A -> List A" ).Def([
+    //     "@  []          []         := []",
+    //     "@  []         (_::_ y ys) := y :: ys",
+    //     "@ (_::_ x xs)  []         := x :: xs",
+    //     "@ (_::_ x xs) (_::_ y ys) := x :: (y :: (braid xs ys))" ])
+    //
     //
     // Vec = new R.Data(
     //   "Vec", "(A : Type) : Nat -> Type",
