@@ -516,7 +516,7 @@ var Reason = (options = {}) => {
         case 'star': return 'Type'
         case 'pi': return `${this[2] ? 'Erased' : ''}Pi(${this[0].toString()}, ${this[1].toString()})`
         case 'lam': return `${this[1] ? 'Erased' : ''}Lam(${this[0].toString()})`
-        case 'app': return `${this[0].toString()} :@: ${this[2] ? 'Erased ' : ''}${this[1].toString()}`
+        case 'app': return `(${this[0].toString()} :@: ${this[2] ? 'Erased ' : ''}${this[1].toString()})`
         case 'boundvar': return `Bound ${this[0]}`
         case 'freevar': return `Free ${this[0]}`
         case 'tcon': return `TC:${this[0].toString()}${[...this].slice(1, 3).flatMap(x => ` (${x.toString()})`).join('')}` //?
@@ -834,7 +834,7 @@ var Reason = (options = {}) => {
       // TODO: enforce left erasure
       function bindvars () {
         // '{a} b c'
-        advance('Binding variable?');
+        advance('Binding variable?'); // TODO: test tcon, dcon
         assertId();
         let bvs = [[token, false]]
         return (function loop () { return alt(() => {
@@ -968,6 +968,7 @@ var Reason = (options = {}) => {
               advance('Variable term?');
               assertId();
               let name = token.id;
+              if (parser.mixfixes.some(x => x[0].startsWith('_' + name))) throw '';
               if (~parser.tnames.indexOf(name)) return new Term({tcon: [ new Name({global: [name]}), [] ]});
               else if (~parser.dnames.indexOf(name)) return new Term({dcon: [ new Name({global: [name]}), [] ]});
               let i = env.findIndex(bv => bv.id === name);
@@ -1129,8 +1130,8 @@ var Reason = (options = {}) => {
               else if (~parser.dnames.indexOf(name)) {
                 let fvName = new Name({global: [ parser.fresh() ]}),
                     newCase = new Term({case: [ new Term({freevar: [fvName]}), [
-                      new Match({clause: [ new Pat({patvar: [ new Name({global: [name]}), false ]}), 'null' ]}) ] ]}),
-                    iarg = tr[1][treeCsr[0][1]][0][1].push(new Arg({arg: [ new Pat({patvar: [fvName]}), false ]}));
+                      new Match({clause: [ new Pat({patdcon: [ new Name({global: [name]}), [], false ]}), 'null' ]}) ] ]}),
+                    iarg = tr[1][treeCsr[0][1]][0][1].push(new Arg({arg: [ new Pat({patvar: [fvName]}), false ]})) - 1;
                 tr[1][treeCsr[0][1]][1] = newCase;
                 return patargs(tr[1][treeCsr[0][1]][1], (csr = [[argCount, 0]].concat(treeCsr)).slice(), [iarg].concat(argCsr))
                   .then(() => [treeCsr, treeCsr])
@@ -1164,8 +1165,8 @@ var Reason = (options = {}) => {
                 } else {
                   let i = resTree[1][treeCsr[0][1]][1][1].findIndex(match => match[0].ctor === 'patdcon' && match[0][0][0] === name);
                   if (!~i) { // leaf node
-                    iarg = resTree[1][treeCsr[0][1]][1][1].push(new Match({clause: [pat, 'null']}));
-                    treeCsr.unshift([argCount, iarg - 1]);
+                    iarg = resTree[1][treeCsr[0][1]][1][1].push(new Match({clause: [pat, 'null']})) - 1;
+                    treeCsr.unshift([argCount, iarg]);
                   } // internal node
                   else treeCsr.unshift([argCount, i])
                 }
@@ -1174,46 +1175,16 @@ var Reason = (options = {}) => {
               } else {
                 let i = resTree[1].findIndex(match => match[0].ctor === 'patdcon' && match[0][0][0] === name);
                 if (!~i) {
-                  iarg = resTree[1].push(new Match({clause: [pat, 'null']}));
-                  treeCsr.unshift([argCount, iarg - 1])
-                } else treeCsr.unshift([argCount, i]);
-              }
-              csr = treeCsr.slice();
-              return resTree
-            } else { // TODO: favour eg 'Bound 0' over 'Case n [Match n := Bound 0]'
-              let pat = new Pat({patvar: [ new Name({global: ['null']}), false ]});
-              if (name === '_') {
-                bvs.unshift({id: ''});
-                pat[0][0] = parser.fresh()
-              } else {
-                bvs.unshift(token)
-                pat[0][0] = name
-              }
-              if (treeCsr.length) {
-                if (resTree[1][treeCsr[0][1]][1] === 'null') {
-                  resTree[1][treeCsr[0][1]][1] = new Term({case: [ 'null', [ new Match({clause: [pat, 'null']}) ] ]});
-                  treeCsr.unshift([argCount, 0]);
-                } else {
-                  let i = resTree[1][treeCsr[0][1]][1][1].findIndex(match => match[0].ctor === 'patvar' && match[0][0][0] === name); // BUG: should fold patvars together
-                  if (!~i) { // leaf node
-                    iarg = resTree[1][treeCsr[0][1]][1][1].push(new Match({clause: [pat, 'null']}));
-                    treeCsr.unshift([argCount, iarg - 1]);
-                  } // internal node
-                  else treeCsr.unshift([argCount, i])
-                }
-                csr = treeCsr.slice();
-                return resTree[1][treeCsr[1][1]][1]
-              }
-              else {
-                let i = resTree[1].findIndex(match => match[0].ctor === 'patvar' && match[0][0] === name); // BUG: should fold patvars together
-                if (!~i) {
-                  iarg = resTree[1].push(new Match({clause: [pat, 'null']}));
-                  treeCsr.unshift([argCount, iarg - 1])
+                  iarg = resTree[1].push(new Match({clause: [pat, 'null']})) - 1;
+                  treeCsr.unshift([argCount, iarg])
                 } else treeCsr.unshift([argCount, i]);
                 csr = treeCsr.slice();
                 return resTree
               }
-            }
+            } // BUG: is this the same patvar ? step in : raise error
+            else if (name === '_') bvs.unshift({id: ''});
+            else bvs.unshift(token);
+            return resTree
           }) }
           let resTree = tree, treeCsr = [], argCount = 0, eps = [];
           advance('Function clause marker?', {value: 'op', id: '@'});
@@ -1240,13 +1211,13 @@ var Reason = (options = {}) => {
               .then(term => {
                 csr.reverse();
                 let head = csr.pop(),
-                    lhs = csr.reduceRight((a, x) => {
-                      if (a[0] === 'null') a[0] = new Term({boundvar: [argCount - 1 - x[0]]}); // subtract is not correct!!
+                    lhs = csr.reduce((a, x) => {
+                      if (a[0] === 'null') a[0] = new Term({boundvar: [argCount - 1 - x[0]]});
                       return a[1][x[1]][1]
                     }, tree);
                 lhs[1][head[1]][1] = term;
                 if (lhs[0] === 'null') lhs[0] = new Term({boundvar: [argCount - 1 - head[0]]});
-              }).catch(e=>{log("e",e);throw e})
+              })
           })).catch(() => alt(() => {
             advance('Absurd pattern marker?', {value: 'op', id: '()'});
             let head = csr.splice(0, 1)[0],
@@ -1328,7 +1299,7 @@ var Reason = (options = {}) => {
           assertOp();
           let ts = [], name = token.id, [mi, ti] = findMixfix(name, parser.mixfixes.map(x => x[0]));
           if (!~ti) {
-            if (!mbTerm) return parseTerm(env, 'var').then(tm => mixfix(env, tm));
+            // if (!mbTerm) return parseTerm(env, 'var').then(tm => mixfix(env, tm));
             error.parser_mismatch(token, index);
           }
           let [mfName, fixity] = parser.mixfixes[mi], lexAp = lexMixfix(name), lexOp = lexMixfix(mfName);
@@ -1408,7 +1379,7 @@ var Reason = (options = {}) => {
           ]), index)
           case 'freevar': case 'tcon': case 'dcon':
           if (fun[0].ctor === 'global' && ~parser.mixfixes.findIndex(x => x[0] === fun[0][0]))
-            return lexMixfix(fun[0][0]).map((token, i) => token === '_' ? (args.pop() || '_') : token).join('').trim()
+            return lexMixfix(fun[0][0]).map((token, i) => token === '_' ? (args.shift() || '_') : token).join('').trim()
           default: return false
         }
       }
@@ -1523,7 +1494,6 @@ var Reason = (options = {}) => {
 
   // Values
   function evaluate (term, ctx = context) {
-    // console.log('eval', term.toString())
     let mbVal, vscrut, local = x => new Decl({sig: [ new Name({global: ['']}), x ]});
     switch (term.ctor) {
       case 'star': return new Value({vstar: []})
@@ -1564,17 +1534,17 @@ var Reason = (options = {}) => {
   }
 
   function quote (value, index = 0) {
-    let name, qname = new Name({quote: [index]});
+    let name, qname = new Value({vfree: [new Name({quote: [index]})]});
     switch (value.ctor) {
       case 'vstar': return new Term({star: []})
-      case 'vpi': return new Term({pi: [ quote(value[0], index), quote(value[1](new Value({vfree: [qname]})), index + 1), value[2]]})
-      case 'vlam': return new Term({lam: [ quote(value[0](new Value({vfree: [qname]})), index + 1), value[1] ]})
+      case 'vpi': return new Term({pi: [ quote(value[0], index), quote(value[1](qname), index + 1), value[2]]})
+      case 'vlam': return new Term({lam: [ quote(value[0](qname), index + 1), value[1] ]})
       case 'vfree': return (name = value[0]).ctor === 'quote' ? new Term({boundvar: [index - name[0] - 1]}) : new Term({freevar: [name]})
       case 'vtcon': return new Term({tcon: [ value[0], value[1].map(v => quote(v, index)) ]})
       case 'vdcon': return new Term({dcon: [ value[0], value[1]
         .map(arg => new Arg({arg: [ quote(arg[0], index), arg[1] ]})) ].concat([value[2]].filter(Boolean))})
       case 'vapp': return new Term({app: [ quote(value[0], index), quote(value[1], index), value[2] ]})
-      case 'vcase': return new Term({case: [ quote(value[0]), value[1] ]})
+      case 'vcase': return new Term({case: [ quote(value[0], index), value[1] ]})
     }
   }
 
@@ -1602,11 +1572,11 @@ var Reason = (options = {}) => {
               return infer(innerArgs = {
                 ctx: ctx.cons(new Decl({sig: [ local, evaluate(term[0], ctx) ]})),
                 term: subst(new Term({freevar: [ local ]}), term[1], false), index: index + 1})
-                .then(type2 => {
-                  args.term = new Term({pi: [term[0], unsubst(new Term({boundvar: [ index ]}), innerArgs.term), term[2]]});
-                  if (type2.ctor !== 'vstar') error.tc_pi_mismatch('range', quote(type2));
-                  return vstar
-                })
+                  .then(type2 => {
+                    args.term = new Term({pi: [term[0], unsubst(new Term({boundvar: [ index ]}), innerArgs.term), term[2]]});
+                    if (type2.ctor !== 'vstar') error.tc_pi_mismatch('range', quote(type2));
+                    return vstar
+                  })
             })
 
           case 'app': return infer(innerArgs = {ctx, term: term[0], index})
@@ -1670,7 +1640,7 @@ var Reason = (options = {}) => {
               ctx.cons(new Decl({sig: [ local, typeVal[0] ]})),
               subst(new Term({freevar: [ local ]}), term[0], false),
               typeVal[1](new Value({vfree: [local]})), index + 1)
-              .then(({term}) => ({term: new Term({lam: [unsubst(new Term({boundvar: [ index ]}), term), typeVal[2]]}), type: typeVal}))
+                .then(({term}) => ({term: new Term({lam: [unsubst(new Term({boundvar: [ index ]}), term), typeVal[2]]}), type: typeVal}))
           }
 
           case 'dcon':
