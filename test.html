@@ -23,7 +23,7 @@
   R.setOptions({ printer: { noMixfixes: false } });
 
   let ap, id1, id2, ifThenElse, partialIf, Void, Unit, Bool, Maybe, Either, Nat, Vec, Fin, Sigma;
-  let id3, tt, lamTest, plus, onePlusOne, half, listNat, theList, listMap, allAddTwo, someList, braid, anotherList;
+  let id3, tt, lamTest, plus, onePlusOne, half, listNat, theList, listMap, allAddTwo, someList, anotherList, braid, braidedList;
   let tail, vecNat, theVec;
   let Id, cong, Leq, ltZero, twoLTone, antisym;
 
@@ -109,8 +109,8 @@
           valueOf () { return this[0].valueOf() + 1 } } } ],
       { fromJS: v => { let p = () => v-- ? Nat().s(p()) : Nat().z(); return p() } }
     );
-
-    await R.ready;
+    //
+    // await R.ready;
     // let nat2 = Nat().s(Nat().s(Nat().z()));
     // console.log(nat2, nat2.term.print(), nat2.toString(), nat2.valueOf());
     // let nat3 = Nat().fromJS(3);
@@ -123,11 +123,11 @@
         "@  Z    n := n",
         "@ (S m) n := S (m + n)"
       ]);
-    onePlusOne = await new R.Sig(
-      "onePlusOne", "Nat").Def(
-      "(+) (S Z) (S Z)"  ).ready;
-
-    console.log(`%conePlusOne =`, 'font-weight: bold; color: deeppink', onePlusOne.result.print());
+    // onePlusOne = await new R.Sig(
+    //   "onePlusOne", "Nat").Def(
+    //   "(+) (S Z) (S Z)"  ).ready;
+    //
+    // console.log(`%conePlusOne =`, 'font-weight: bold; color: deeppink', onePlusOne.result.print());
     //
     // // TODO: R.Def with fixity
     //
@@ -146,9 +146,9 @@
       "@  Z        := Z",
       "@ (S  Z)    := Z",
       "@ (S (S m)) := S (half m)" ]).ready
-
-    console.log((await half(plus(onePlusOne, onePlusOne)).ready).result.print())
-
+    //
+    // console.log((await half(plus(onePlusOne, onePlusOne)).ready).result.print())
+    //
     List = new R.Data(
       "List", "(A : Type) : Type",
       [ { "[] : List A": { toString: () => '[]', valueOf: () => [] } },
@@ -174,9 +174,9 @@
     //
     //
     listMap = new R.Sig(
-      "listMap", "{A B : Type} -> (A -> B) -> List A -> List B" ).Def(
-      [ "@ {A} {B} f  []         := []", // {A B} ?
-        "@ {A} {B} f (_::_ a as) := (f a) :: (listMap {A} {B} f as)" ]); // TODO: allow erased terms to not be written, ie listMap f ys
+      "listMap", "{A B : Type} -> (A -> B) -> List A -> List B" ).Def([
+      "@ {A} {B} f  []         := []",
+      "@ {A} {B} f (_::_ a as) := (f a) :: (listMap {A} {B} f as)" ]); // TODO: allow erased terms to not be written, ie listMap f ys
 
     allAddTwo = new R.Sig(
       "allAddTwo", "List Nat -> List Nat"  ).Def(
@@ -189,7 +189,7 @@
     anotherList = await new R.Sig(
       "anotherList", "List Nat").Def(
       "allAddTwo someList" ).ready;
-
+    
     console.log(`%canotherList =`, 'font-weight: bold; color: deeppink', anotherList.result.print());
     //
     // let concat = new R.Sig(
@@ -198,14 +198,22 @@
     //     "@ {A} (_::_ a as) xs := (++) {A} as (a :: xs)" ]);
     //
     //
+    // braid = await new R.Sig(
+    //   "braid", "{A : Type} -> List A -> List A -> List A" ).Def([
+    //   "@ {A}  []        []       := []",
+    //   "@ {A}  []       (y :: ys) := y :: ys",
+    //   "@ {A} (x :: xs)  []       := x :: xs",
+    //   "@ {A} (x :: xs) (y :: ys) := x :: (y :: (braid {A} xs ys))" ]).ready;
     braid = await new R.Sig(
       "braid", "{A : Type} -> List A -> List A -> List A" ).Def([
-        "@ {A}  []          []         := []",
-        "@ {A}  []         (_::_ y ys) := y :: ys",
-        "@ {A} (_::_ x xs)  []         := x :: xs",
-        "@ {A} (_::_ x xs) (_::_ y ys) := x :: (y :: (braid {A} xs ys))" ]).ready;
+      "@ {A}  []          []         := []",
+      "@ {A}  []         (_::_ y ys) := y :: ys",
+      "@ {A} (_::_ x xs)  []         := x :: xs",
+      "@ {A} (_::_ x xs) (_::_ y ys) := x :: (y :: (braid {A} xs ys))" ]).ready;
 
-    console.log((await braid(Nat(), someList, listMap(Nat(), Nat(), half, anotherList)).ready).result.print())
+    braidedList = await braid(Nat(), someList, listMap(Nat(), Nat(), half, anotherList)).ready;
+
+    console.log(`%cbraidedList =`, 'font-weight: bold; color: deeppink', braidedList.result.print())
     //
     //
     // Vec = new R.Data(
