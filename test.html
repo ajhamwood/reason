@@ -23,7 +23,8 @@
   R.setOptions({ printer: { noMixfixes: false } });
 
   let ap, id1, id2, ifThenElse, partialIf, Void, Unit, Bool, Maybe, Either, Nat, Vec, Fin, Sigma;
-  let id3, tt, lamTest, plus, onePlusOne, half, listNat, theList, listMap, allAddTwo, someList, anotherList, braid, braidedList;
+  let id3, tt, lamTest, plus, onePlusOne, half, listNat, theList, listMap, allAddTwo, someList, anotherList,
+      braid, braidedList, lookupDbl, mbElement;
   let tail, vecNat, theVec;
   let Id, cong, Leq, ltZero, twoLTone, antisym;
 
@@ -71,11 +72,11 @@
     //     { 'T : Bool': { toString: () => 'T', valueOf: () => true } } ],
     //   { fromJS: v => Bool()[v ? 't' : 'f']() }
     // );
-    // Maybe = new R.Data(
-    //   "Maybe", "(A : Type) : Type",
-    //   [ "Just : A -> Maybe A",
-    //     "Nothing : Maybe A" ]
-    // );
+    Maybe = new R.Data(
+      "Maybe", "(A : Type) : Type",
+      [ "Just : A -> Maybe A",
+        "Nothing : Maybe A" ]
+    );
     // Either = new R.Data(
     //   "Either", "(A : Type)(B : Type) : Type",
     //   [ "Right : A -> Either A B",
@@ -189,7 +190,7 @@
     anotherList = await new R.Sig(
       "anotherList", "List Nat").Def(
       "allAddTwo someList" ).ready;
-    
+
     console.log(`%canotherList =`, 'font-weight: bold; color: deeppink', anotherList.result.print());
     //
     // let concat = new R.Sig(
@@ -212,8 +213,23 @@
       "@ {A} (_::_ x xs) (_::_ y ys) := x :: (y :: (braid {A} xs ys))" ]).ready;
 
     braidedList = await braid(Nat(), someList, listMap(Nat(), Nat(), half, anotherList)).ready;
+    console.log(`%cbraidedList :=`, 'font-weight: bold', braidedList.print);
+    console.log(`%cbraidedList =`, 'font-weight: bold; color: deeppink', braidedList.result.print());
 
-    console.log(`%cbraidedList =`, 'font-weight: bold; color: deeppink', braidedList.result.print())
+    // R.setOptions({ debug: { lexer: true, parser: true } });
+    lookupDbl = await new R.Sig(
+      "lookupDbl", "{A : Type} -> List A -> Nat -> Maybe A").Def([
+      "@ {A} (_::_ a (_::_ b bs)) (S n) := lookupDbl {A} bs n",
+      "@ {A} [] Z := Nothing",
+      "@ {A} (_::_ a []) Z := Nothing",
+      "@ {A} (_::_ a (_::_ b bs)) Z := Just b",
+      "@ {A} [] (S n) := Nothing",
+      "@ {A} (_::_ a []) (S n) := Nothing",
+    ]).ready;
+    mbElement = await lookupDbl(Nat(), List(Nat()).fromJS([3, 2, 1, 0]), Nat().fromJS(1)).ready;
+    console.log(`%cmbElement :=`, 'font-weight: bold', mbElement.print);
+    console.log(`%cmbElement =`, 'font-weight: bold; color: deeppink', mbElement.result.print())
+
     //
     //
     // Vec = new R.Data(
