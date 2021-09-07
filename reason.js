@@ -139,9 +139,9 @@ var Reason = (options = {}) => {
 
   class Data {
     constructor (nameString, ddef, cdefs, converters = {}) {
-      let rx_ddef = /^(([a-zA-Z][a-zA-Z0-9]*[\']*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r)[\d]{0,3}))?\s.*)$/,
-          rx_cdef = /^(([a-zA-Z][a-zA-Z0-9]*[\']*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r)[\d]{0,3}))?\s+(:\s+.*))$/,
-          nameFix = (str, flag) => str.match(flag ? rx_ddef : rx_cdef).slice(1).filter(Boolean),
+      let rx_ddef = /^(([a-zA-Z][a-zA-Z0-9]*[\']*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r|n)[\d]{0,3}))?)$/,
+          rx_cdef = /^(([a-zA-Z][a-zA-Z0-9]*[\']*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r|n)[\d]{0,3}))?\s+(:\s+.*))$/,
+          nameFix = (str, flag) => str.match(flag ? rx_ddef : rx_cdef).slice(1 + flag).filter(Boolean),
           [name, aux] = nameFix(nameString, true).filter(Boolean);
       wait('data', name);
       let readyDecl = false, ctorNames = cdefs.map(cdef => typeof cdef === 'string' ? [nameFix(cdef, false), {}] :
@@ -232,7 +232,7 @@ var Reason = (options = {}) => {
   class Sig {
     constructor (nameString, declString) {
       // Sig(name || "name fixity", signature || sigdef)
-      let [name, aux] = nameString.match(/^(([a-zA-Z][a-zA-Z0-9]*[\']*)\s.*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r)[\d]{0,3}))?$/).slice(1).filter(Boolean);
+      let [name, aux] = nameString.match(/^(([a-zA-Z][a-zA-Z0-9]*[\']*)\s.*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r|n)[\d]{0,3}))?$/).slice(1).filter(Boolean);
       wait('sig', name);
       let ready = false, jsSig = { Def: (...args) => jsSig = Object.assign(new Def(nameString, ...args), jsSig) };
       Object.defineProperties(jsSig, { name: {value: name}, ready: { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsSig) } } });
@@ -354,7 +354,7 @@ var Reason = (options = {}) => {
         rx_digits = /^([0-9]+)(.*)$/,
         rx_hexs = /^([0-9a-fA-F]+)(.*)$/,
         source = sourceString, tokens = name ? [{id: name, value: 'name'}] : [], index = 0, word, char,
-        reserved = [':', '->', ',', '=>', '@', ':=', '|'];
+        reserved = [':', '->', ',', '=>', '@', ':=', '|', '()'];
 
     function alt (fn) {
       let rewind = index;
@@ -494,7 +494,7 @@ var Reason = (options = {}) => {
     }
   }
 
-  class Term extends AST('ann', 'star', 'pi', 'lam', 'app', 'boundvar', 'freevar' ,'tcon', 'dcon', 'case') {
+  class Term extends AST('ann', 'star', 'pi', 'lam', 'app', 'boundvar', 'freevar' ,'tcon', 'dcon', 'eq', 'refl', 'case') {
     traversable = true
     equal (operand) {
       return this.ctor === operand.ctor &&
@@ -513,7 +513,9 @@ var Reason = (options = {}) => {
         case 'freevar': return `Free ${this[0]}`
         case 'tcon': return `TC:${this[0].toString()}${[...this].slice(1, 3).flatMap(x => ` (${x.toString()})`).join('')}` //?
         case 'dcon': return `DC:${this[0].toString()}${this[1].map(x => ` (${x.toString()})`).join('')}`
-        case 'case': return `Case (${this[0].toString()}) { ${this[1].map(x => x.toString()).join(' | ')} }`
+        case 'eq': return `${this[1].toString()} ={${this[0].toString()}} ${this[2].toString()}`
+        case 'refl': return 'Refl'
+        case 'case': return `${this[2] ? 'Record' : 'Case'} (${this[0].toString()}) { ${this[1].map(x => x.toString()).join(' | ')} }`
       }
     }
     eval () { return evaluate(this) }
@@ -569,7 +571,7 @@ var Reason = (options = {}) => {
     toString () { return this.items.map(x => x.toString()).join(' ')  }
   }
 
-  class Decl extends AST('sig', 'def', 'data', 'datasig') { // is recdef being fully handled by eval case?
+  class Decl extends AST('sig', 'def', 'data', 'datasig', 'record') { // is recdef being fully handled by eval case?
     toString () {
       switch (this.ctor) {
         case 'sig': return `SIG: ${this[0].toString()} : ${('quote' in this[1] ? this[1].quote() : this[1]).toString()}`
@@ -578,11 +580,19 @@ var Reason = (options = {}) => {
           this[1].items.length ? ' ' + this[1].toString() : ''} : ${this[2].toString() + (this[2].length ? ' -> ' : '')}Type` +
           this[3].map(ctor => `\n  ${ctor.toString()}`).join('')
         case 'datasig': return `DATASIG: ${this[0].toString()} ${this[1].toString()} : ${this[2].toString() + (this[2].length ? ' -> ' : '')}Type`
+        case 'record': return `RECORD: ${this[0].toString()}${
+          this[2].items.length ? ' ' + this[2].toString() : ''} : ${this[3].toString() + (this[3].length ? ' -> ' : '')}Type\n  CTOR: ${this[1].toString()}` +
+          this[4].map(fld => `\n  ${fld.toString()}`).join('')
       }
     }
   }
-  class Ctor extends AST('ctor') {
-    toString () { return `CTOR: ${this[0].toString()}${this[1].items.length - 1 ? ' ' + this[1].tail().toString() : ''} : ${this[1].items.slice(-1)[0].toString()}` }
+  class Ctor extends AST('ctor', 'field') {
+    toString () {
+      switch (this.ctor) {
+        case 'ctor': return `CTOR: ${this[0].toString()}${this[1].items.length - 1 ? ' ' + this[1].tail().toString() : ''} : ${this[1].items.slice(-1)[0].toString()}`
+        case 'field': return `FIELD: ${this[0].toString()}`
+      }
+    }
   }
 
   class Value extends AST('vlam', 'vstar', 'vpi', 'vfree', 'vtcon', 'vdcon', 'vapp', 'vcase') {
@@ -597,22 +607,24 @@ var Reason = (options = {}) => {
     toString () { return (this[1] ? 'Erased ' : '') + this[0].toString() }
   }
 
-  class Pat extends AST('patdcon', 'patvar', 'patbvar') {
+  class Pat extends AST('patdcon', 'patvar', 'patbvar', 'patrefl', 'absurd') {
     traversable = true
     toString () {
       switch (this.ctor) {
         case 'patdcon': return `${this[2] ? 'Inac' : ''}PatDC:${this[0].toString()}${this[1].map(x => ` (${x.toString()})`).join('')}`
         case 'patvar': return `${this[1] ? 'Inac' : ''}PatVar ${this[0].toString()}`
         case 'patbvar': return 'PatBVar ' + this[0]
+        case 'patrefl': return 'PatRefl'
+        case 'absurd': return 'Absurd'
       }
     }
   }
-  class Match extends AST('clause', 'absurd') {
+  class Match extends AST('clause', 'impossible') {
     traversable = true
     toString () {
       switch (this.ctor) {
         case 'clause': return `PatMatch @ ${this[0].toString()} := ${this[1].toString()}`
-        case 'absurd': return `Absurd @ ${this[0].toString()}`
+        case 'impossible': return `Impossible @ ${this[0].toString()}`
       }
     }
   }
@@ -736,7 +748,7 @@ var Reason = (options = {}) => {
 
             case 'ddef': return altNames(arg => {
               // name bindings : type
-              advance('Type/record definition?', {value: 'name'});
+              advance('Datatype/record definition?', {value: 'name'});
               let name = token.id;
               if (name.match(/_/)) arg.mixfixes.push([name, parseOptions.fixity]);
               arg.tnames.push(name);
@@ -783,7 +795,7 @@ var Reason = (options = {}) => {
               parserDebug('Pattern?');
               return pattern(parseOptions.bvs || [])
                 .then(([res, env]) => {
-                  if (res.ctor === 'global') return endTest([ new Match({absurd: [res]}) ]);
+                  if (res.ctor === 'global') return endTest([ new Match({impossible: [res]}) ]);
                   else {
                     advance('Pattern equation separator?', {value: 'op', id: ':='});
                     return parseTerm(env, 'ann')
@@ -1064,14 +1076,11 @@ var Reason = (options = {}) => {
         function patargs (tr, treeCsr, argCsr, argCount) {
           let retTr = tr;
           return (function loop() {
-            // {x}
-            return enclosure(['braces'], () => subpat(tr, treeCsr, argCsr, argCount)
-              .then(([res, tc, ac]) => (treeCsr = tc, argCsr = ac, [res, true])))
-              // x
-              .catch(() => alt(() => subpat(tr, treeCsr, argCsr, argCount)
-                .then(([res, tc, ac]) => (treeCsr = tc, argCsr = ac, [res, false]))))
-              .then(([trx, ep]) => {
-                retTr = trx;
+            return subpat(tr, treeCsr, argCsr, argCount)
+              .then(([trx, tc, ac]) => {
+                retTr = trx
+                treeCsr = tc;
+                argCsr = ac;
                 return loop()
               })
           })().catch(() => [retTr, treeCsr, argCsr])
@@ -1165,7 +1174,10 @@ var Reason = (options = {}) => {
                 })
             } else throw new Error('')
           }).catch(() => enclosure(['parens', 'braces'], isolatedPat).then(([res]) => res))
-            .catch(() => alt(() => isolatedPat(false)))
+            .catch(e => {
+              if (argCsr.length === 0) throw e;
+              return isolatedPat(false)
+            })
         }
         let csr = [], bvs = [];
         return altMsg('Try Clause Statement', () => { // TODO: erased patterns
@@ -1227,9 +1239,8 @@ var Reason = (options = {}) => {
             advance('Pattern equation separator?', {value: 'op', id: ':='});
             return parseTerm(bvs, 'ann')
               .then(term => {
-                csr.reverse();
-                let head = csr.pop(),
-                    lhs = csr.reduce((a, x) => {
+                let head = csr.shift(),
+                    lhs = csr.reduceRight((a, x) => {
                       if (a[0] === 'null') a[0] = new Term({boundvar: [argCount - 1 - x[0]]});
                       return a[1][x[1]][1]
                     }, tree);
@@ -1238,9 +1249,9 @@ var Reason = (options = {}) => {
               })
           })).catch(() => alt(() => {
             advance('Absurd pattern marker?', {value: 'op', id: '()'});
-            let head = csr.splice(0, 1)[0],
+            let head = csr.shift()[1],
                 clause = csr.reduceRight((a, x) => a[1][x][1], tree)[1].splice(head, 1)[0];
-            tree[1].push(new Match({absurd: [clause[0]]}))
+            tree[1].push(new Match({impossible: [clause[0]]}))
           })).then(() => [tree, tr => Array(argCount).fill(0).reduce((acc, _, i) => new Term({lam: [acc, eps[i]]}), tr)])
         })
       }
@@ -1432,7 +1443,7 @@ var Reason = (options = {}) => {
               lexOp.shift();
               return loop()
             });
-            return parseTerm(env, 'var').then(tm => {
+            return parseTerm(env, 'var').then(tm => alt(() => {
               // ..._a x b_...[...]
               advance('Next mixfix operator?');
               assertOp();
@@ -1443,7 +1454,7 @@ var Reason = (options = {}) => {
               (ts = lexAp.filter(x => x === '_').fill(false).concat(ts)).unshift(tm);
               lexOp.splice(0, lexAp.length);
               return loop()
-            })
+            }).catch(e => { ts.unshift(tm); throw e }))
           })()
             .catch(() => {
               ts = ts.slice(ts.concat([true]).findIndex(Boolean));
@@ -1542,7 +1553,7 @@ var Reason = (options = {}) => {
       } else if (testObj(Match)) {
         switch (obj.ctor) {
           case 'clause': return recPrint(obj[0], indent, 0, int2) + ' := ' + recPrint(obj[1], indent, 0, int2)
-          case 'absurd': return recPrint(obj[0], indent, 0, int2) + ' ()'
+          case 'impossible': return recPrint(obj[0], indent, 0, int2) + ' ()'
         }
       } else if (testObj(Tele)) {
         return obj.items.map((item, i) => {
@@ -1697,13 +1708,8 @@ var Reason = (options = {}) => {
           case 'app': return infer(innerArgs = {ctx, term: term[0], index})
             .then(type => {
               term[0] = innerArgs.term;
-              // while (!term[2] && type[2]) {
-              //   let typeVar = new Term({freevar: [ new Name({global: [parser.fresh()]}) ]})
-              //   ctx.extend(new Decl({sig: [ local, typeVar ]}))
-              //   type = type[1](evaluate(typeVar, ctx))
-              // }
-              if (term[2] && !type[2]) error.tc_erasure_mismatch();
               if (type.ctor !== 'vpi') error.tc_app_mismatch(quote(type));
+              if (term[2] && !type[2]) error.tc_erasure_mismatch();
               let [dom, func] = type;
               return check(ctx, term[1], dom, index)
                 .then(({term}) => func(evaluate(term, ctx)))
@@ -1840,12 +1846,12 @@ var Reason = (options = {}) => {
 
     function constraintToDecls (ctx, term1, term2) {
       let decls = [];
-      if (term1.equal(term2)) return decls;
-      if (term1.ctor === 'app' && term2.ctor === 'app') decls = decls
-        .concat(constraintToDecls(ctx, term1[0], term2[0]))
-        .concat(constraintToDecls(ctx, term1[1], term2[1]));
-      else if (term1.ctor === 'freevar') return [ new Decl({def: [term1[0], term2]}) ];
+      if (term1.ctor === 'freevar') return [ new Decl({def: [term1[0], term2]}) ];
       else if (term2.ctor === 'freevar') return [ new Decl({def: [term2[0], term1]}) ];
+      else if (term1.ctor === 'dcon' && term2.ctor === 'dcon') decls = decls
+        .concat(term1[1].map((arg, i) => constraintToDecls(ctx, arg[0], term2[1][i][0])));
+      else if (~['pi', 'app', 'case'].findIndex(tm => term1.ctor === tm || term2.ctor === tm) ||
+        (term1.ctor === 'lam' && term1[1]) || (term2.ctor === 'lam' && term2[1])) return decls;
       else error.tc_constraint_cannot_eq()
     }
 
