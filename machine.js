@@ -1,21 +1,21 @@
 // Utilities
 var $ = (wm => { let v = Object.values, r = Promise.resolve.bind(Promise),
     test = (obj, con) => obj.constructor === con || con.prototype.isPrototypeOf(obj),
-    add = (k, t, fn, es = wm.get(k) || {}) => { remove(k, t, fn.name); k.addEventListener(t, (es[t] = es[t] || {})[fn.name] = fn); wm.set(k, es) },
+    add = (k, t, fn, es = wm.get(k) || {}) => { remove(k, t, fn.name); k.addEventListener(t, (es[t] ||= {})[fn.name] = fn); wm.set(k, es) },
     remove = (k, t, fname, es = wm.get(k)) => { if (es && t in es && fname in es[t]) {
       k.removeEventListener(t, es[t][fname]); delete es[t][fname] && (v(es[t]).length || delete es[t]) && (v(es).length || wm.delete(k)) } };
 
 //   $ enhances querySelectorAll
-  return Object.assign((sel, root = document) => v(root.querySelectorAll(sel)), {
+  return Object.assign((sel, node = document) => v(node.querySelectorAll(sel)), {
 
 //   $.Machine creates state machines for the page
     Machine: function (state) { let es = {}; Object.seal(state);
       return Object.assign(this, {
         state () { return state },
-        on (t, fn) { (es[t] = es[t] || new Map()).set(fn.name, fn); return this },
-        stop (t, fname = '') { t in es && es[t].delete(fname) && (es[t].size || delete es[t]); return this },
-        emit (t, ...args) { return t in es && [...es[t]].reduce((s, [,fn]) => (fn.apply(s, args), s), state) },
-        emitAsync (t, ...args) { return t in es && [...es[t]].reduce((p, [,fn]) => p.then(s => r(fn.apply(s, args)).then(() => s)), r(state)) } }) },
+        on (t, fn) { (es[t] ||= new Map()).set(fn.name, fn); return this },
+        stop (t, fname = '') { es?.[t].delete(fname) && (es[t].size || delete es[t]); return this },
+        emit (t, ...args) { return (s => (es?.[t].forEach(fn => fn.apply(s, args)), s))(state) },
+        emitAsync (t, ...args) { return (p => (es?.[t].forEach(fn => p = p.then(s => r(fn.apply(s, args)).then(() => s))), p))(r(state)) } }) },
 
 //   $.pipe manages async event chronology
     pipe: (ps => (p, ...ands) => ps[p] = (ps[p] || r()).then(() => Promise.all(ands.map(ors =>
@@ -38,5 +38,9 @@ var $ = (wm => { let v = Object.values, r = Promise.resolve.bind(Promise),
 
 //   $.load enhances importNode
     load (id, dest = 'body', root) {
-      let stamp = document.importNode($('template#' + id)[0].content, true);
-      return $(dest, root).map(n => v(stamp.cloneNode(true).childNodes).map(c => n.appendChild(c))) } }) })(new WeakMap())
+      return $(dest, root).map(n => v($('template#' + id)[0].content.cloneNode(true).children).map(c => n.appendChild(c))) },
+
+//   $.loadWc adds web components
+    loadWc (tag, con) {
+      customElements.define(tag, class extends HTMLElement { constructor(...args) { super();
+        this.attachShadow({mode: 'open'}).appendChild($('#' + tag)[0].content.cloneNode(true)); con.apply(this, args) } }) } }) })(new WeakMap())

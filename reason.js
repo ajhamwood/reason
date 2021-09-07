@@ -32,9 +32,10 @@ var Reason = (options = {}) => {
             parser_mismatch: (token, index, id, match) => `Parser error: mismatch at '${token.id || ''}'${
               'value' in token ? `, '${token.value}'` : ''}, token #${index}${id ? `: expected '${id}'` : ''}${match ? `, '${match}'` : ''}`,
             parser_nesting: () => 'Parser error: parens nest level too deep',
-            parser_notid: (token, index) => `Parser error: ${token} not an identifier at position ${index}`,
+            parser_notid: (token, index) => `Parser error: [${Object.values(token).map(v => `'${v}'`).join(', ')}] not a valid identifier at position ${index}`,
             parser_notvalid: which => `Parser error: not a valid ${which}`,
             parser_tcon_type: () => 'Parser error: type constructor must have Type in the final position',
+            parser_inconsistent_patvars: (tested, given) => `Parser error: found pattern variable ${given}, expected ${tested}`,
             parser_mixfix_miss_id: (which, unapp) => `Parser error: missing identifiers ${unapp} of mixfix operator ${which}`,
             parser_mixfix_bad: (which, mf) => `Parser error: unexpected identifier ${which} in mixfix ${mf}`,
             parser_mixfix_tcon_app: which => `Parser error: type constructor mixfix ${which} arguments must be given from the left`,
@@ -82,38 +83,38 @@ var Reason = (options = {}) => {
             internal_cant_find: cname => `Internal error: can't find ${cname}`
           })[prop] || (() => prop))(...args)) }
         } }),
-        Alt = Object.assign(class {
+        Alt = Object.assign(class { // Error handling
           constructor (fn) {
             let thrown = false, value, newThis = this,
                 error = v => (thrown = true, v),
                 join = v => newThis = Alt.prototype.isPrototypeOf(v) ? v : newThis;
-            Object.assign(this, {
-              left (fn) {
-                if (!thrown) return this;
-                thrown = false;
-                join(value = fn(value, error));
-                return newThis },
-              right (fn) {
-                if (thrown) return this;
-                join(value = fn(value, error));
-                return newThis },
-              map (fn) {
-                if (!thrown) value = value.map(v => join(fn(v, error)));
-                return newThis } });
+            this.left = fn => { // Failure
+              if (!thrown) return this;
+              thrown = false;
+              join(value = fn(value, error));
+              return newThis };
+            this.right = fn => { // Success
+              if (thrown) return this;
+              join(value = fn(value, error));
+              return newThis };
+            this.map = fn => {
+              if (!thrown) value = value.map(v => join(fn(v, error)));
+              return newThis };
             return fn(
-              v => {
-                join(value = v);
-                return newThis },
-              e => {
-                thrown = true;
-                join(value = e);
-                return newThis } )
+              v => (join(value = v), newThis),
+              e => (thrown = true, join(value = e), newThis))
           }
         }, {
-          pure: v => new Alt(r => r(v)),
-          throw: e => new Alt((_, l) => l(e))
+          pure: v => new Alt(r => r(v)), // Resolve
+          throw: e => new Alt((_, l) => l(e)), // Reject
+          bind: alt => { // Await
+            let extract;
+            alt.right(v => extract = {right: v})
+              .left(e => extract = {left: e});
+            return extract
+          }
         }),
-        log = (...args) => console.log(...[].concat(...args.map(e => ['\n  - ', e])).slice(1)); // TODO expand logging
+        log = (...args) => console.log(...args.flatMap(e => ['\n  - ', e]).slice(1)); // TODO expand logging
 
   let active = [];
   function wait (declType, name) {
@@ -138,20 +139,21 @@ var Reason = (options = {}) => {
 
   class Data {
     constructor (nameString, ddef, cdefs, converters = {}) {
-      let nameFix = str => str.match(/^(([a-zA-Z][a-zA-Z0-9]*[\']*)\s.*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r)[\d]{0,3}))?$/).slice(1).filter(Boolean);
-      let [name, aux] = nameFix(nameString).filter(Boolean);
-      name = name || fixName;
+      let rx_ddef = /^(([a-zA-Z][a-zA-Z0-9]*[\']*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r|n)[\d]{0,3}))?)$/,
+          rx_cdef = /^(([a-zA-Z][a-zA-Z0-9]*[\']*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r|n)[\d]{0,3}))?\s+(:\s+.*))$/,
+          nameFix = (str, flag) => str.match(flag ? rx_ddef : rx_cdef).slice(1 + flag).filter(Boolean),
+          [name, aux] = nameFix(nameString, true).filter(Boolean);
       wait('data', name);
-      let readyDecl = false, ctorNames = cdefs.map(cdef => typeof cdef === 'string' ? [...nameFix(cdef), {}] :
-            Object.entries(cdef)[0].flatMap((x, i) => i ? x : nameFix(x))),
+      let readyDecl = false, ctorNames = cdefs.map(cdef => typeof cdef === 'string' ? [nameFix(cdef, false), {}] :
+            Object.entries(cdef)[0].map((x, i) => i ? x : nameFix(x, false))),
           { fromJS = () => {}, ...dConverters } = converters, fromJSThis = {}, root,
-          jsTerm = ctorNames.reduce((a, x) => Object.assign(a, { [x[0].match(/\w+/) ? x[0].toLowerCase() : x[0]]: () => error.unchecked(name) }),
+          jsTerm = ctorNames.reduce((a, x) => Object.assign(a, { [x[0][0].match(/\w+/) ? x[0][0].toLowerCase() : x[0][0]]: () => error.unchecked(name) }),
             { appliedTerms: [], ...dConverters });
       // Data(name, tcon, [dcons], {...converters})
       // Data(name, tcon, [{dcons}], {...converters})
       sequence(() => cdefs.reduce(
-        (p, cdef, i) => p.then(acc => tokenise({sourceString: ctorNames[i][0]})
-          .then(lex => parse(lex, 'cdef', {fixity: ctorNames[i][1]}))
+        (p, cdef, i) => p.then(acc => tokenise({name: ctorNames[i][0][1], sourceString: ctorNames[i][0][ctorNames[i][0].length - 1]})
+          .then(lex => parse(lex, 'cdef', ctorNames[i][0].length === 4 ? {fixity: ctorNames[i][0][2]} : {}))
           .then(res => (acc[0][3].push(res[0]), acc))),
         tokenise({name, sourceString: ddef}).then(lex => parse(lex, 'ddef', {fixity: aux})))
         .then(decls => typecheck(decls, context))
@@ -169,7 +171,7 @@ var Reason = (options = {}) => {
         if (readyDecl) {
           let { term, type, params, indices } = root, jsTyTerm = { appliedTerms: typeArgs, type };
           if (term) Object.assign(jsTyTerm, { term, print: print(term) });
-          ctorNames.forEach(([_, ctorName, cConverters]) => {
+          ctorNames.forEach(([[_, ctorName], cConverters]) => {
             let lcname = ctorName.toLowerCase(), ctor;
             jsTyTerm[lcname] = fromJSThis[lcname] = ctor = Object.assign((...termArgs) => {
               // Initialise a term of the given type
@@ -230,7 +232,7 @@ var Reason = (options = {}) => {
   class Sig {
     constructor (nameString, declString) {
       // Sig(name || "name fixity", signature || sigdef)
-      let [name, aux] = nameString.match(/^(([a-zA-Z][a-zA-Z0-9]*[\']*)\s.*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r)[\d]{0,3}))?$/).slice(1).filter(Boolean);
+      let [name, aux] = nameString.match(/^(([a-zA-Z][a-zA-Z0-9]*[\']*)\s.*)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?)(?:\s+((?:l|r|n)[\d]{0,3}))?$/).slice(1).filter(Boolean);
       wait('sig', name);
       let ready = false, jsSig = { Def: (...args) => jsSig = Object.assign(new Def(nameString, ...args), jsSig) };
       Object.defineProperties(jsSig, { name: {value: name}, ready: { get () { return sequence(() => new Promise(r => queueMicrotask(r))).then(() => jsSig) } } });
@@ -268,17 +270,9 @@ var Reason = (options = {}) => {
           }));
       } else if (Array.prototype.isPrototypeOf(declStrings)) {
         // Def(name, [clauses], { ...converters })
-        // "clause" | {patcase: [subcase...]}
         sequence(() => declStrings.reduce((p, clause) => p.then(([acc]) =>
-          typeof clause === 'string' ?
-            tokenise({name, sourceString: clause})
-              .then(lex => parse(lex, 'casetree', {fixity: aux, tree: acc})) :
-            Promise.resolve().then(() => {
-              let e = Object.entries(clause);
-              if (e.length !== 1) error.malf('definition');
-              let [clauseDef, cases] = e;
-              return tokenise({name, sourceString: clauseDef}) })
-              .then(lex => parse(lex, 'casetree', {fixity: aux, tree: acc, cases}))), Promise.resolve([]))
+          tokenise({name, sourceString: clause})
+            .then(lex => parse(lex, 'clause', {fixity: aux, tree: acc}))), Promise.resolve([]))
           .then(([tree, lamWrap]) => [lamWrap(tree)])
           .then(decls => typecheck(decls, context))).then(ress => {
             ress.forEach(res => {
@@ -355,11 +349,12 @@ var Reason = (options = {}) => {
     return result.slice(1, 3).filter(Boolean).concat(result[3] ? lexMixfix(result[3]) : [])
   }
 
-  function tokenise ({name, sourceString}) {
+  function tokenise ({name, sourceString}) { // (\s+(?:l|r|n)[\d]{0,3})?
     let rx_token = /^((\s+)|([a-zA-Z][a-zA-Z0-9]*[\']*|_)(?=\s+|[(){}"]|$)|(_?(?:[a-zA-Z0-9':!$%&*+.,/<=>\?@\\^|\-~\[\]]+(?:_[a-zA-Z0-9:!$%&*+.,/<=>\?@\\^|\-~\[\]]+)*)_?|\(\))|(0|-?[1-9][0-9]*)|([(){}"]))(.*)$/,
         rx_digits = /^([0-9]+)(.*)$/,
         rx_hexs = /^([0-9a-fA-F]+)(.*)$/,
-        source = sourceString, tokens = name ? [{id: name, value: 'name'}] : [], index = 0, word, char;
+        source = sourceString, tokens = name ? [{id: name, value: 'name'}] : [], index = 0, word, char,
+        reserved = [':', '->', ',', '=>', '@', ':=', '|', '()'];
 
     function alt (fn) {
       let rewind = index;
@@ -448,16 +443,16 @@ var Reason = (options = {}) => {
 
         let result;
         if (!source) return acc.add({value: 'final'});
-        result = source.match(rx_token);
+        result = source.slice(0, 100).match(rx_token);
         if (debug.lexer) log('lex', result);
         if (!result) return err(['lexer_unexpected', source[0], null, index]);
         word = result[1];
         index += word.length;
-        source = result[7];
+        source = result[7] + source.slice(100);
 
-        if (result[3]) acc.add({id: word});
+        if (result[3] || (result[4] && !~reserved.indexOf(result[4]))) acc.add({id: word});
         else if (result[4]) acc.add({id: word, value: 'op'});
-        else if (result[5]) return num().right(lex);
+        else if (result[5]) return num().right(lex); //6 etc
         else if (result[6]) {
           if (word === '"') return string().right(lex);
           else acc.add({id: word, value: 'punc'})
@@ -499,7 +494,7 @@ var Reason = (options = {}) => {
     }
   }
 
-  class Term extends AST('ann', 'star', 'pi', 'lam', 'app', 'boundvar', 'freevar' ,'tcon', 'dcon', 'case') {
+  class Term extends AST('ann', 'star', 'pi', 'lam', 'app', 'boundvar', 'freevar' ,'tcon', 'dcon', 'eq', 'refl', 'case') {
     traversable = true
     equal (operand) {
       return this.ctor === operand.ctor &&
@@ -513,12 +508,14 @@ var Reason = (options = {}) => {
         case 'star': return 'Type'
         case 'pi': return `${this[2] ? 'Erased' : ''}Pi(${this[0].toString()}, ${this[1].toString()})`
         case 'lam': return `${this[1] ? 'Erased' : ''}Lam(${this[0].toString()})`
-        case 'app': return `${this[0].toString()} :@: ${this[2] ? 'Erased ' : ''}${this[1].toString()}`
+        case 'app': return `(${this[0].toString()} :@: ${this[2] ? 'Erased ' : ''}${this[1].toString()})`
         case 'boundvar': return `Bound ${this[0]}`
         case 'freevar': return `Free ${this[0]}`
         case 'tcon': return `TC:${this[0].toString()}${[...this].slice(1, 3).flatMap(x => ` (${x.toString()})`).join('')}` //?
         case 'dcon': return `DC:${this[0].toString()}${this[1].map(x => ` (${x.toString()})`).join('')}`
-        case 'case': return `Case ${this[0].toString()} |${this[1].map(x => `\n  ${x.toString()}`).join('')}`
+        case 'eq': return `${this[1].toString()} ={${this[0].toString()}} ${this[2].toString()}`
+        case 'refl': return 'Refl'
+        case 'case': return `${this[2] ? 'Record' : 'Case'} (${this[0].toString()}) { ${this[1].map(x => x.toString()).join(' | ')} }`
       }
     }
     eval () { return evaluate(this) }
@@ -574,7 +571,7 @@ var Reason = (options = {}) => {
     toString () { return this.items.map(x => x.toString()).join(' ')  }
   }
 
-  class Decl extends AST('sig', 'def', 'data', 'datasig') { // is recdef being fully handled by eval case?
+  class Decl extends AST('sig', 'def', 'data', 'datasig', 'record') { // is recdef being fully handled by eval case?
     toString () {
       switch (this.ctor) {
         case 'sig': return `SIG: ${this[0].toString()} : ${('quote' in this[1] ? this[1].quote() : this[1]).toString()}`
@@ -583,11 +580,19 @@ var Reason = (options = {}) => {
           this[1].items.length ? ' ' + this[1].toString() : ''} : ${this[2].toString() + (this[2].length ? ' -> ' : '')}Type` +
           this[3].map(ctor => `\n  ${ctor.toString()}`).join('')
         case 'datasig': return `DATASIG: ${this[0].toString()} ${this[1].toString()} : ${this[2].toString() + (this[2].length ? ' -> ' : '')}Type`
+        case 'record': return `RECORD: ${this[0].toString()}${
+          this[2].items.length ? ' ' + this[2].toString() : ''} : ${this[3].toString() + (this[3].length ? ' -> ' : '')}Type\n  CTOR: ${this[1].toString()}` +
+          this[4].map(fld => `\n  ${fld.toString()}`).join('')
       }
     }
   }
-  class Ctor extends AST('ctor') {
-    toString () { return `CTOR: ${this[0].toString()}${this[1].items.length - 1 ? ' ' + this[1].tail().toString() : ''} : ${this[1].items.slice(-1)[0].toString()}` }
+  class Ctor extends AST('ctor', 'field') {
+    toString () {
+      switch (this.ctor) {
+        case 'ctor': return `CTOR: ${this[0].toString()}${this[1].items.length - 1 ? ' ' + this[1].tail().toString() : ''} : ${this[1].items.slice(-1)[0].toString()}`
+        case 'field': return `FIELD: ${this[0].toString()}`
+      }
+    }
   }
 
   class Value extends AST('vlam', 'vstar', 'vpi', 'vfree', 'vtcon', 'vdcon', 'vapp', 'vcase') {
@@ -602,22 +607,24 @@ var Reason = (options = {}) => {
     toString () { return (this[1] ? 'Erased ' : '') + this[0].toString() }
   }
 
-  class Pat extends AST('patdcon', 'patvar', 'patbvar') {
+  class Pat extends AST('patdcon', 'patvar', 'patbvar', 'patrefl', 'absurd') {
     traversable = true
     toString () {
       switch (this.ctor) {
         case 'patdcon': return `${this[2] ? 'Inac' : ''}PatDC:${this[0].toString()}${this[1].map(x => ` (${x.toString()})`).join('')}`
         case 'patvar': return `${this[1] ? 'Inac' : ''}PatVar ${this[0].toString()}`
         case 'patbvar': return 'PatBVar ' + this[0]
+        case 'patrefl': return 'PatRefl'
+        case 'absurd': return 'Absurd'
       }
     }
   }
-  class Match extends AST('clause', 'absurd') {
+  class Match extends AST('clause', 'impossible') {
     traversable = true
     toString () {
       switch (this.ctor) {
         case 'clause': return `PatMatch @ ${this[0].toString()} := ${this[1].toString()}`
-        case 'absurd': return `Absurd @ ${this[0].toString()}`
+        case 'impossible': return `Impossible @ ${this[0].toString()}`
       }
     }
   }
@@ -661,7 +668,7 @@ var Reason = (options = {}) => {
       function advance (msg, match) {
         msg && parserDebug(msg);
         if (match && (('id' in match && tokens[index].id !== match.id) || ('value' in match && tokens[index].value !== match.value)))
-        error.parser_mismatch(token, index, match.id, match.value);
+          error.parser_mismatch(token, index, match.id, match.value);
         token = next();
       }
       function assertId () { if (!('id' in token) || 'value' in token) error.parser_notid(token, index) }
@@ -675,8 +682,8 @@ var Reason = (options = {}) => {
         })
       }
       function altNames (fn) {
-        let rewind = index, arg;
-        return new Promise(r => r(fn(arg = {tnames: [], dnames: [], mixfixes: []}))).then(res => {
+        let rewind = index, arg = {tnames: [], dnames: [], mixfixes: []};
+        return new Promise(r => r(fn(arg))).then(res => {
           parser.tnames = parser.tnames.concat(arg.tnames);
           parser.dnames = parser.dnames.concat(arg.dnames.filter(c => !~parser.dnames.indexOf(c)));
           parser.mixfixes = parser.mixfixes.concat(arg.mixfixes.filter(c => !~parser.mixfixes.findIndex(n => n[0] === c[0])));
@@ -689,13 +696,14 @@ var Reason = (options = {}) => {
       function altMsg (msg, fn) {
         return alt(!debug.parser ? fn : () => {
           console.group(msg);
-          return fn()
-        }).then(result => {
-          console.groupEnd();
-          return result
-        }).catch(err => {
-          console.groupEnd();
-          throw err
+          return new Promise(r => r(fn()))
+            .then(result => {
+              console.groupEnd();
+              return result
+            }).catch(err => {
+              console.groupEnd();
+              throw err
+            })
         })
       }
 
@@ -740,7 +748,7 @@ var Reason = (options = {}) => {
 
             case 'ddef': return altNames(arg => {
               // name bindings : type
-              advance('Type/record definition?', {value: 'name'});
+              advance('Datatype/record definition?', {value: 'name'});
               let name = token.id;
               if (name.match(/_/)) arg.mixfixes.push([name, parseOptions.fixity]);
               arg.tnames.push(name);
@@ -752,7 +760,6 @@ var Reason = (options = {}) => {
             case 'cdef': return altNames(arg => {
               // name : bindings type (?)
               advance('Constructor definition?');
-              assertId();
               let name = token.id;
               if (name.match(/_/)) arg.mixfixes.push([name, parseOptions.fixity]);
               arg.dnames.push(name);
@@ -762,14 +769,14 @@ var Reason = (options = {}) => {
                 .catch(e => error.append(e, 'parser_notvalid', 'constructor definition'))
             })
 
-            case 'casetree': return altNames(arg => {
+            case 'clause': return altNames(arg => {
               // args := term
-              advance('Casetree statement?');
+              advance('Clause statement?');
               let name = token.id;
               if (name.match(/_/)) arg.mixfixes.push([name, parseOptions.fixity]);
-              return caseTree(parseOptions.tree || new Term({case: [ null, [] ]}), parseOptions.cases || [])
+              return caseTree(parseOptions.tree || new Term({case: [ 'null', [] ]}))
                 .then(([res, fn]) => endTest([ res, x => new Decl({def: [ new Name({global: [name]}), fn(x) ]}) ]))
-                .catch(e => error.append(e, 'parser_notvalid', 'casetree statement'))
+                .catch(e => error.append(e, 'parser_notvalid', 'clause statement'))
             })
 
             case 'case': return altNames(arg => {
@@ -788,7 +795,7 @@ var Reason = (options = {}) => {
               parserDebug('Pattern?');
               return pattern(parseOptions.bvs || [])
                 .then(([res, env]) => {
-                  if (res.ctor === 'global') return endTest([ new Match({absurd: [res]}) ]);
+                  if (res.ctor === 'global') return endTest([ new Match({impossible: [res]}) ]);
                   else {
                     advance('Pattern equation separator?', {value: 'op', id: ':='});
                     return parseTerm(env, 'ann')
@@ -815,7 +822,7 @@ var Reason = (options = {}) => {
           let [open, close] = ({ parens: ['(', ')'], braces: ['{', '}'] })[gly = glyph]
           level++;
           advance(`Open ${gly}?`, {value: 'punc', id: open});
-          return fn().then(result => {
+          return fn(glyph === 'braces').then(result => {
             advance(`Close ${gly}?`, {value: 'punc', id: close});
             return result
           })
@@ -831,7 +838,7 @@ var Reason = (options = {}) => {
       // TODO: enforce left erasure
       function bindvars () {
         // '{a} b c'
-        advance('Binding variable?');
+        advance('Binding variable?'); // TODO: test tcon, dcon
         assertId();
         let bvs = [[token, false]]
         return (function loop () { return alt(() => {
@@ -965,6 +972,7 @@ var Reason = (options = {}) => {
               advance('Variable term?');
               assertId();
               let name = token.id;
+              if (parser.mixfixes.some(x => x[0].startsWith('_' + name))) throw '';
               if (~parser.tnames.indexOf(name)) return new Term({tcon: [ new Name({global: [name]}), [] ]});
               else if (~parser.dnames.indexOf(name)) return new Term({dcon: [ new Name({global: [name]}), [] ]});
               let i = env.findIndex(bv => bv.id === name);
@@ -1060,130 +1068,290 @@ var Reason = (options = {}) => {
         }
       }
 
-      function caseTree (tree, subcases) {
-        // tree: new Term({case: [bv|fv, [new Match({clause: [pat, term]}), new Match({clause: [pat, caseTerm]}), ...]]})
-        // TODO: enforce args length
-        function patargs (tr, treeCsr, argCsr) {
-          let retTr, argCount = 0;
+      function caseTree (tree) {
+        // tree: new Term({case: [bv|fv, [new Match({clause: [pat, term|caseTerm]}), ...]]})
+        // TODO: enforce non-erased args length
+
+        // TODO: replace patvar names with numbered fvs, associated list of variable names (project-wide)
+        function patargs (tr, treeCsr, argCsr, argCount) {
+          let retTr = tr;
           return (function loop() {
-            // {x}
-            return enclosure(['braces'], () => subpat(tr, treeCsr, argCsr).then(res => [res, true]))
-              // x
-              .catch(() => alt(() => subpat(tr, treeCsr, argCsr).then(res => [res, false])))
-              .then(([trx, ep]) => {
-                retTr = trx;
-                argCount++;
+            return subpat(tr, treeCsr, argCsr, argCount)
+              .then(([trx, tc, ac]) => {
+                retTr = trx
+                treeCsr = tc;
+                argCsr = ac;
                 return loop()
               })
-          })().catch(() => [retTr, treeCsr, argCsr, argCount])
+          })().catch(() => [retTr, treeCsr, argCsr])
         }
-        function subpat (tr, treeCsr, argCsr) {
+        function subpat (tr, treeCsr, argCsr, argCount) {
+          // treeCsr (local): [ [arg index, clause index], ... ] // case nesting address (boundvars + splitting patdcons)
+          // argCsr: [clause index, ...] // patdcon nesting address
+          // argCount: arg index of tr // boundvars only; used by treeCsr
           // (pat)
+          function isolatedPat (isErased) {
+            return alt(() => { // _
+              advance('Wildcard?', {id: '_'});
+              let pat = new Pat({patvar: [ new Name({global: [parser.fresh()]}), false ]}), // TODO: inaccessible patterns
+                  iarg = argCsr.length > 0 ?
+                    argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, isErased]})) :
+                    tr[1].push(new Match({clause: [pat, 'null']})); // <-- tree update relAddr, push Match
+              if (argCsr.length === 0) treeCsr.unshift([argCount, iarg - 1]);
+              csr = treeCsr.slice();
+              return [tr, treeCsr, argCsr]
+            }) // t *or* x
+            .catch(() => alt(() => {
+              advance('Variable or constructor term?');
+              assertId();
+              let name = token.id, iarg,
+                  pat = new Pat({patdcon: [ new Name({global: [name]}), [], false ]});
+              argCsr.length > 0 && argCsr[0]++;
+              if (~parser.tnames.indexOf(name)) error.parser_mismatch('pattern');
+              else if (~parser.dnames.indexOf(name)) { // Case split on data constructor
+                let baseClause = tr[1][treeCsr[0][1]];
+                if (baseClause[1] === 'null') {
+                  let fvName = new Name({global: [ parser.fresh() ]}),
+                      newCase = new Term({case: [ new Term({freevar: [fvName]}), [new Match({clause: [ pat, 'null' ]}) ] ]});
+                  iarg = baseClause[0][1].push(new Arg({arg: [ new Pat({patvar: [fvName]}), isErased ]})) - 1; // <-- tree update relAddr, push Arg
+                  baseClause[1] = newCase; // <-- tree Update relAddr, set Term
+                  return patargs(newCase, (csr = [[argCount, 0]].concat(treeCsr)).slice(), [iarg].concat(argCsr), argCount)
+                } else {
+                  let i = baseClause[1][1].findIndex(match => match[0].ctor === 'patdcon' && match[0][0][0] === name);
+                  if (!~i) i = baseClause[1][1].push(new Match({clause: [pat, 'null']})) - 1; // <-- tree update absAddr, push Match
+                  return [baseClause[1], (csr = [[argCount, i]].concat(treeCsr)), [i].concat(argCsr)]
+                }
+              } else { // pattern variable
+                let pat = new Pat({patvar: [ new Name({global: [name]}), false ]});
+                if (argCsr.length > 0) {
+                  let patBranch = tr[1][treeCsr[0][1]][0][1];
+                  if (patBranch[argCsr[0]]) {
+                    if (patBranch[argCsr[0]][0][0][0] !== name) error.parser_inconsistent_patvars(patBranch[argCsr[0]][0][0][0], name)
+                  } else patBranch.push(new Arg({arg: [pat, isErased]})) // <-- tree update relAddr, push Arg
+                } else tr[1][treeCsr[0][1]][0][1].push(new Arg({arg: [pat, isErased]})) // <-- tree update relAddr, push Arg
+                return [tr, treeCsr, argCsr]
+              }
+              csr = treeCsr.slice();
+              return [tr, treeCsr, argCsr]
+            }))
+          }
+          function mixfixPat (mbTerm) {
+            // How tf do I run Alt on a tree?!
+            // Idea: altTree - build diff of [addr:update] - commit/reject
+            // Idea: move tree update to root loop when checking a subpat
+          }
           return enclosure(['parens'], () => {
             advance('Constructor term?');
             assertId();
             let name = token.id;
             if (~parser.tnames.indexOf(name)) error.parser_mismatch('pattern');
             else if (~parser.dnames.indexOf(name)) {
-              let i = tr[1].findIndex(match => match[0].ctor === 'patdcon' && match[0][0][0] === name);
-              if (!~i) { // New constructor pattern (creates leaf node)
-                let pat = new Pat({patdcon: [ new Name({global: [name]}), [], false ]}),
-                    iarg = (argCsr.length ?
-                      argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
-                      tr[1].push(new Match({clause: [pat, null]}))) - 1;
-                if (argCsr.length === 0) treeCsr.unshift(iarg);
-                return patargs(tr, csr = treeCsr, [iarg].concat(argCsr)).then(([res]) => res)
-              } // Matching constructor pattern with a fresh name at the given pattern argument (steps into internal node)
-              else if (tr[1][i][0].ctor === 'patvar' && tr[1][i][1].ctor === 'case') // BUG when case syntax in lex?
-                return patargs(tr[1][i][0], csr = [i].concat(treeCsr), []).then(([res]) => res);
-              else { // Matching constructor pattern with a constructor at the given pattern argument (converts leaf node to internal node and steps in)
-                let fvName = new Name({global: [ parser.fresh() ]}), splitClause = tr[1][i],
-                    splitPatArg = splitClause[0][1].splice(argCsr[0], 1, new Arg({arg: [ new Pat({patvar: [fvName]}), false ]}))[0][0]; // erasure?
-                tr[1][i] = new Match({clause: [ splitClause[0],
-                  new Term({case: [ new Term({freevar: [fvName]}), [ new Match({clause: [ splitPatArg, splitClause[1] ]}) ] ]})
-                ]});
-                return patargs(tr[1][i][1], csr = [i].concat(treeCsr), [])
-                  .then(([res, _1, _2, argCount]) => Array(argCount - 1).fill(0).reduce(acc => new Term({lam: [acc, false]}), res))
-              }
+              return Promise.reject()//alt(() => mixfix([]))
+                .catch(() => {
+                  let baseTree = (treeCsr.length > 0 ? tr[1][treeCsr[0][1]][1] : tr),
+                      pat = new Pat({patdcon: [ new Name({global: [name]}), [], false ]});
+                  if (baseTree === 'null' && argCsr.length === 0) {
+                    tr[1][treeCsr[0][1]][1] = new Term({case: [ 'null', [ new Match({clause: [pat, 'null']}) ] ]}); // <-- tree update absAddr, push Case with Match
+                    return patargs(tr[1][treeCsr[0][1]][1], (csr = [[argCount, 0]].concat(treeCsr)).slice(), [-1].concat(argCsr), argCount)
+                  } else {
+                    let i = baseTree[1].findIndex(match => match[0].ctor === 'patdcon' && match[0][0][0] === name);
+                    if (!~i) { // New constructor pattern (creates leaf node)
+                      let iarg;
+                      if (treeCsr.length > 0) {
+                        iarg = baseTree[1].push(new Match({clause: [pat, 'null']})) - 1; // <-- tree update relAddr, push Match
+                        return patargs(baseTree, (csr = [[argCount, iarg]].concat(treeCsr)).slice(), [iarg].concat(argCsr), argCount)
+                      } else {
+                        iarg = (argCsr.length > 0 ?
+                          argCsr.reduceRight((a, x) => a[1][x], baseTree)[0][1].push(new Arg({arg: [pat, false]})) :
+                          baseTree[1].push(new Match({clause: [pat, 'null']}))) - 1; // <-- tree update relAddr, push Match
+                        if (argCsr.length === 0) treeCsr.unshift([argCount, iarg]);
+                        return patargs(baseTree, (csr = treeCsr).slice(), [iarg].concat(argCsr), argCount)
+                      }
+                    } else { // Matching constructor pattern with a constructor at the given pattern argument (steps into internal node)
+                      return patargs(baseTree, (csr = [[argCount, i]].concat(treeCsr)), [-1].concat(argCsr), argCount)
+                    }
+                  }
+                })
             } else throw new Error('')
-          }) // _
-            .catch(() => alt(() => { // or parens
-              advance('Wildcard?', {id: '_'});
-              let pat = new Pat({patvar: [ new Name({global: [parser.fresh()]}), false ]}),
-                  iarg = argCsr.length ?
-                    argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
-                    tr[1].push(new Match({clause: [pat, null]}));
-              if (argCsr.length === 0) treeCsr.unshift(ialamrg - 1);
-              csr = treeCsr;
-              return tr
-            })) // t *or* x
-            .catch(() => alt(() => { // or parens
-              advance('Variable or constructor term?');
-              assertId();
-              let name = token.id, iarg;
-              if (~parser.tnames.indexOf(name)) error.parser_mismatch('pattern');
-              else if (~parser.dnames.indexOf(name)) {
-                let pat = new Pat({patdcon: [ new Name({global: [name]}), [], false ]});
-                iarg = argCsr.length ?
-                  argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
-                  tr[1].push(new Match({clause: [pat, null]}))
-              } else {
-                let pat = new Pat({patvar: [ new Name({global: [name]}), false ]});
-                iarg = argCsr.length ?
-                  argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, false]})) :
-                  tr[1].push(new Match({clause: [pat, null]}))
-              }
-              if (argCsr.length === 0) treeCsr.unshift(iarg - 1);
-              csr = treeCsr;
-              return tr
-            }))
+          }).catch(() => enclosure(['parens', 'braces'], isolatedPat).then(([res]) => res))
+            .catch(e => {
+              if (argCsr.length === 0) throw e;
+              return isolatedPat(false)
+            })
         }
         let csr = [], bvs = [];
-        return altMsg('Try Case Tree Statement', () => { // TODO: erased patterns
-          function rootArg () { return Promise.resolve().then(() => {
-            advance('Variable or wildcard? (root level)');
+        return altMsg('Try Clause Statement', () => { // TODO: erased patterns
+          function rootArg (isErased) { return Promise.resolve().then(() => {
+            advance('Variable, wildcard or constructor? (root level)');
             assertId();
-            let name = token.id;
+            let name = token.id, iarg;
             if (~parser.tnames.indexOf(name)) error.parser_mismatch('pattern');
-            else if (~parser.dnames.indexOf(name)) throw new Error('skip');
+            else if (~parser.dnames.indexOf(name)) {
+              let pat = new Pat({patdcon: [ new Name({global: [name]}), [], false ]});
+              if (treeCsr.length > 0) {
+                if (resTree[1][treeCsr[0][1]][1] === 'null') {
+                  resTree[1][treeCsr[0][1]][1] = new Term({case: [ 'null', [ new Match({clause: [pat, 'null']}) ] ]}); // <-- tree update absAddr, push Case with Match
+                  treeCsr.unshift([argCount, 0]);
+                } else {
+                  let i = resTree[1][treeCsr[0][1]][1][1].findIndex(match => match[0].ctor === 'patdcon' && match[0][0][0] === name);
+                  if (!~i) { // leaf node
+                    iarg = resTree[1][treeCsr[0][1]][1][1].push(new Match({clause: [pat, 'null']})) - 1; //<-- tree update absAddr, push Match
+                    treeCsr.unshift([argCount, iarg]);
+                  } // internal node
+                  else treeCsr.unshift([argCount, i])
+                }
+                csr = treeCsr.slice();
+                return [resTree[1][treeCsr[1][1]][1], isErased]
+              } else {
+                let i = resTree[1].findIndex(match => match[0].ctor === 'patdcon' && match[0][0][0] === name);
+                if (!~i) {
+                  iarg = resTree[1].push(new Match({clause: [pat, 'null']})) - 1; // <-- tree update absAddr, push Match
+                  treeCsr.unshift([argCount, iarg])
+                } else treeCsr.unshift([argCount, i]);
+                csr = treeCsr.slice();
+                return [resTree, isErased]
+              }
+            } // TODO: is this the same patvar ? step in : raise error
             else if (name === '_') bvs.unshift({id: ''});
-            else bvs.unshift(token)
+            else bvs.unshift(token);
+            return [resTree, isErased]
           }) }
-          let resTree, argCount = 0, splitArg, eps = [];
+          let resTree = tree, treeCsr = [], argCount = 0, eps = [];
           advance('Function clause marker?', {value: 'op', id: '@'});
           return (function loop () {
             // {x}
-            return enclosure(['braces'], () => rootArg().then(() => true))
-              // x
-              .catch(() => alt(() => rootArg().then(() => false)))
+            return alt(() => enclosure(['braces'], rootArg))
+              // x *or* (x)
+              .catch(() => alt(() => rootArg(false)))
               // pat *or* (pat)
-              .catch(() => alt(() => subpat(tree, [], []).then(tr => { // {pat} ?
-                resTree = tr;
-                splitArg = argCount;
+              .catch(() => alt(() => subpat(resTree, treeCsr, [], argCount).then(([tr, tc]) => { // Goal: tree updates here only
+                treeCsr = tc;
                 bvs.unshift({id: ''})
-                return false
+                return [tr, false]
               })))
-              .then(ep => {
+              .then(([tr, ep]) => {
+                resTree = tr;
                 eps.unshift(ep);
                 argCount++;
                 return loop()
               })
           })().catch(() => alt(() => {
-            if (tree[0] === null) tree[0] = new Term({boundvar: [argCount - splitArg - 1]})
             advance('Pattern equation separator?', {value: 'op', id: ':='});
             return parseTerm(bvs, 'ann')
               .then(term => {
-                let head = csr.splice(0, 1)[0];
-                csr.reduceRight((a, x) => a[1][x][1], tree)[1][head][1] = term;
+                let head = csr.shift(),
+                    lhs = csr.reduceRight((a, x) => {
+                      if (a[0] === 'null') a[0] = new Term({boundvar: [argCount - 1 - x[0]]});
+                      return a[1][x[1]][1]
+                    }, tree);
+                lhs[1][head[1]][1] = term;
+                if (lhs[0] === 'null') lhs[0] = new Term({boundvar: [argCount - 1 - head[0]]});
               })
           })).catch(() => alt(() => {
             advance('Absurd pattern marker?', {value: 'op', id: '()'});
-            let head = csr.splice(0, 1)[0],
+            let head = csr.shift()[1],
                 clause = csr.reduceRight((a, x) => a[1][x][1], tree)[1].splice(head, 1)[0];
-            tree[1].push(new Match({absurd: [clause[0]]}))
+            tree[1].push(new Match({impossible: [clause[0]]}))
           })).then(() => [tree, tr => Array(argCount).fill(0).reduce((acc, _, i) => new Term({lam: [acc, eps[i]]}), tr)])
         })
       }
+
+      //################### NEW, COMPOSABLE CASETREE PARSER  ###################
+
+      // function caseTree (tree) {
+      //   function rootArg (env, isErased) { // TODO: erased patterns
+      //     return Promise.resolve().then(() => {
+      //       advance('Variable, wildcard or constructor? (root level)');
+      //       assertId();
+      //       let name = token.id;
+      //       if (~parser.tnames.indexOf(name)) error.parser_mismatch('pattern');
+      //       else if (~parser.dnames.indexOf(name)) {
+      //         let pat = new Pat({patdcon: [ new Name({global: [name]}), [], false ]});
+      //         if (env.subtree === null) {
+      //           env.diff.push([ new Term({case: [ null, [ new Match({clause: [pat, null]}) ] ]}), [] ]);
+      //           env.addr.tree.push([env.argIx, 0]);
+      //           env.csr = env.csr.concat([1, 0, 1])
+      //         } else {
+      //           let i = env.subtree[1].findIndex(match => match[0].ctor === 'patdcon' && match[0][0][0] === name);
+      //           if (!~i) env.diff.push([ new Match({clause: [pat, null]}), [i = env.subtree[1].length] ]);
+      //           env.addr.tree.push([env.argIx, i]);
+      //           env.csr = env.csr.concat([1, i, 1])
+      //         }
+      //       } else if (name === '_') bvs.unshift({id: ''});
+      //       // TODO: is this the same patvar ? step in : raise error
+      //       else bvs.unshift(token);
+      //       return isErased
+      //     })
+      //   }
+      //
+      //   function subpat (env) {
+      //     function isolatedPat (isErased) {}
+      //
+      //     function mixfixPat (mbPat) {}
+      //
+      //     return enclosure(['parens'], () => {
+      //       advance('Constructor term?');
+      //       assertId();
+      //       let name = token.id;
+      //       if (~parser.tnames.indexOf(name)) error.parser_mismatch('pattern');
+      //       else if (~parser.dnames.indexOf(name)) {
+      //         return Promise.reject()  // alt(() => mixfix())
+      //           .catch(() => {
+      //             let i = env.subtree[1].findIndex(match => match[0].ctor === 'patdcon' && match[0][0][0] === name);
+      //             if (!~i) { // New constructor pattern (creates leaf node)
+      //               let pat = new Pat({patdcon: [ new Name({global: [name]}), [], false ]});
+      //               if (env.addr.arg.length > 0) {
+      //                 env.diff.push([ new Arg({arg: [pat, false]}), [1, env.addr.arg[env.addr.arg.length - 1]] ])
+      //               }
+      //             } else { // Matching constructor pattern with a constructor at the given pattern argument (steps into internal node)
+      //               env.addr.tree.push([env.argIx, i]);
+      //               env.addr.arg.push();
+      //               env.csr = env.csr.concat([1, i, 1])
+      //             }
+      //             return patargs(env)
+      //           })
+      //       } else throw new Error('')
+      //     }).catch(() => enclosure(['parens', 'braces'], isolatedPat).then(([res]) => res))
+      //       .catch(() => alt(() => isolatedPat(false)))
+      //   }
+      //
+      //   function patargs (env) {}
+      //
+      //   return altMsg('Try Clause Statement', () => {
+      //     let env = { addr: { tree: [], arg: [] }, csr: [], argIx: 0, diff: [],
+      //           get subtree () { return this.csr.reduce((a, x) => a[x], tree) } },
+      //         bvs = [], eps = [], diffs = [];
+      //     return (function loop () {
+      //       // {x}
+      //       return alt(() => enclosure(['braces'], () => rootArg(env, true)))
+      //         // x
+      //         .catch(() => alt(() => rootArg(env, false)))
+      //         // (pat) *or* pat
+      //         .catch(() => alt(() => subpat(env)
+      //           .then(() => {
+      //             bvs.unshift({id: ''})
+      //             return false
+      //           })))
+      //         .then(ep => {
+      //           diffs = diffs.concat(env.diff);
+      //           eps.unshift(ep);
+      //           env.argIx++;
+      //           env.diff = [];
+      //           env.addr.arg = [];
+      //           return loop()
+      //         })
+      //     })().catch(() => alt(() => {
+      //       advance('Pattern equation marker?', {value: 'op', id: ':='})
+      //       return parseTerm(bvs, 'ann')
+      //         .then(term => {
+      //           (env.addr.tree, diffs, tree)
+      //         })
+      //     })).catch(() => alt(() => {
+      //       advance('Absurd pattern marker?', {value: 'op', id: '()'});
+      //       (env.addr.tree, diffs, tree)
+      //     })).then(() => [tree, subtree => Array(env.argIx).fill().reduce((acc, _, i) => new Term({lam: [acc, eps[i]]}), tr)])
+      //   })
+      // }
 
       function caseOf (env) {
         return altMsg('Try Case Statement', () => {
@@ -1257,7 +1425,7 @@ var Reason = (options = {}) => {
           assertOp();
           let ts = [], name = token.id, [mi, ti] = findMixfix(name, parser.mixfixes.map(x => x[0]));
           if (!~ti) {
-            if (!mbTerm) return parseTerm(env, 'var').then(tm => mixfix(env, tm));
+            // if (!mbTerm) return parseTerm(env, 'var').then(tm => mixfix(env, tm));
             error.parser_mismatch(token, index);
           }
           let [mfName, fixity] = parser.mixfixes[mi], lexAp = lexMixfix(name), lexOp = lexMixfix(mfName);
@@ -1275,7 +1443,7 @@ var Reason = (options = {}) => {
               lexOp.shift();
               return loop()
             });
-            return parseTerm(env, 'var').then(tm => {
+            return parseTerm(env, 'var').then(tm => alt(() => {
               // ..._a x b_...[...]
               advance('Next mixfix operator?');
               assertOp();
@@ -1286,7 +1454,7 @@ var Reason = (options = {}) => {
               (ts = lexAp.filter(x => x === '_').fill(false).concat(ts)).unshift(tm);
               lexOp.splice(0, lexAp.length);
               return loop()
-            })
+            }).catch(e => { ts.unshift(tm); throw e }))
           })()
             .catch(() => {
               ts = ts.slice(ts.concat([true]).findIndex(Boolean));
@@ -1318,7 +1486,7 @@ var Reason = (options = {}) => {
 
   function print (o) { // TODO: annotation pass, then print pass
     function vars (i) { return 'xyzwvutsrqponmlkjihgfedcba'.split('')[i % 26].repeat(Math.ceil(++i / 26)) }
-    let anns = [], preString = (function recPrint (obj, int1 = 0, int2 = 0) {
+    let anns = [], preString = (function recPrint (obj, indent = 0, int1 = 0, int2 = 0) {
       function step (v) {
         anns[v - 1] = 0;
         return v
@@ -1333,42 +1501,42 @@ var Reason = (options = {}) => {
           case 'app':
           if (fun[1].ctor === 'boundvar') anns[index - fun[1][0] - 1] = 1;
           return checkMf(fun[0], args.concat([
-            fun[1].ctor === 'boundvar' ? (fun[1][0] + 1 > index ? '_' : ` ${vars(fun[1][0])} `) : ` ${recPrint(fun[1], 2, index)} `
+            fun[1].ctor === 'boundvar' ? (fun[1][0] + 1 > index ? '_' : ` ${vars(fun[1][0])} `) : ` ${recPrint(fun[1], indent, 2, index)} `
           ]), index)
           case 'freevar': case 'tcon': case 'dcon':
           if (fun[0].ctor === 'global' && ~parser.mixfixes.findIndex(x => x[0] === fun[0][0]))
-            return lexMixfix(fun[0][0]).map((token, i) => token === '_' ? (args.pop() || '_') : token).join('').trim()
+            return lexMixfix(fun[0][0]).map((token, i) => token === '_' ? (args.shift() || '_') : token).join('').trim()
           default: return false
         }
       }
       function nestedLambda (body, eps, index) { return body.ctor === 'lam' ? nestedLambda(body[0], eps.concat([body[1]]), index + 1):
         (checkMf(body[0], [], index) ||
-          Array.from(Array(index), (_, i) => bracesIf(eps[i], vars(i))).join(' , ') + ' => ' + recPrint(body, 0, index)) }
+          Array.from(Array(index), (_, i) => bracesIf(eps[i], vars(i))).join(' , ') + ' => ' + recPrint(body, indent, 0, index)) }
       function nestedPi (range, domain, eps, index) { return domain.ctor === 'pi' ?
         nestedPi([[domain[0], index]].concat(range), domain[1], eps.concat([domain[2]]), step(index + 1)) :
         (checkMf(domain, [], index) ||
-          range.reverse().map(([tm, i], j) => enclosureIf(eps[j], true, `[${i}]` + recPrint(tm, 1, i)) + ' -> ').join('') + recPrint(domain, 0, index)) }
+          range.reverse().map(([tm, i], j) => enclosureIf(eps[j], true, `[${i}]` + recPrint(tm, indent, 1, i)) + ' -> ').join('') + recPrint(domain, indent, 0, index)) }
       if (testObj(Term)) {
         switch (obj.ctor) {
           case 'star': return 'Type'
-          case 'ann': return parensIf(int1 > 1, recPrint(obj[0], 2, int2) + ' : ' + recPrint(obj[1], 0, int2))
+          case 'ann': return parensIf(int1 > 1, recPrint(obj[0], indent, 2, int2) + ' : ' + recPrint(obj[1], indent, 0, int2))
           case 'pi': return obj[1].ctor === 'pi' ?
             parensIf(int1 > 1, nestedPi([[obj[1][0], step(int2 + 1)], [obj[0], int2]], obj[1][1], [obj[2], obj[1][2]], step(int2 + 2))) :
-            enclosureIf(obj[2], obj[0].ctor === 'pi', (obj[0].ctor === 'pi' ? `[${int2}]` : '') + recPrint(obj[0], obj[2], int2) + ' -> ' +
-              (checkMf(obj[1], [], step(int2 + 1)) || recPrint(obj[1], 0, int2 + 1)))
+            enclosureIf(obj[2], obj[0].ctor === 'pi', (obj[0].ctor === 'pi' ? `[${int2}]` : '') + recPrint(obj[0], indent, obj[2], int2) + ' -> ' +
+              (checkMf(obj[1], [], step(int2 + 1)) || recPrint(obj[1], indent, 0, int2 + 1)))
           case 'lam': return parensIf(int1 > 0, obj[0].ctor === 'lam' ?
             nestedLambda(obj[0][0], [obj[1], obj[0][1]], int2 + 2) :
-            (checkMf(obj[0], [], int2) || bracesIf(obj[1], vars(int2)) + ' => ' + recPrint(obj[0], 0, int2 + 1))) // this checkMf index...
+            (checkMf(obj[0], [], int2) || bracesIf(obj[1], vars(int2)) + ' => ' + recPrint(obj[0], indent, 0, int2 + 1))) // this checkMf index...
           case 'app': return parensIf(int1 > 1, checkMf(obj, [], int2) ||
-            recPrint(obj[0], 2 - (obj[0].ctor === 'app'), int2) + ' ' + bracesIf(obj[2], recPrint(obj[1], 2 + obj[2], int2)))
+            recPrint(obj[0], indent, 2 - (obj[0].ctor === 'app'), int2) + ' ' + bracesIf(obj[2], recPrint(obj[1], indent, 2 + obj[2], int2)))
           case 'boundvar': anns[int2 - obj[0] - 1] = 1; return vars(int2 - obj[0] - 1)
-          case 'freevar': return recPrint(obj[0], 0, int2)
-          case 'tcon': return parensIf(int1 > 2 + !obj[1].length, checkMf(obj, obj[1].map(tm => ` ${recPrint(tm, 2, int2)} `), int2) ||
-            recPrint(obj[0], 0, int2) + obj[1].map(tm => ' ' + recPrint(tm, 2, int2)).join(''))
+          case 'freevar': return recPrint(obj[0], indent, 0, int2)
+          case 'tcon': return parensIf(int1 > 2 + !obj[1].length, checkMf(obj, obj[1].map(tm => ` ${recPrint(tm, indent, 2, int2)} `), int2) ||
+            recPrint(obj[0], indent, 0, int2) + obj[1].map(tm => ' ' + recPrint(tm, indent, 2, int2)).join(''))
           case 'dcon': return parensIf(int1 > 1 + !obj[1].length,
-            checkMf(obj, obj[1].map(arg => ` ${(arg[1] ? `{${recPrint(arg[0], 3, int2)}}` : recPrint(arg[0], 2, int2))} `), int2) ||
-            recPrint(obj[0], 0, int2) + obj[1].map(arg => ' ' + (arg[1] ? `{${recPrint(arg[0], 3, int2)}}` : recPrint(arg[0], 2, int2))).join(''))
-          case 'case': return recPrint(obj[0], 0, int2) + ' |' + obj[1].map(match => '\n  ' + recPrint(match, 0, int2))
+            checkMf(obj, obj[1].map(arg => ` ${(arg[1] ? `{${recPrint(arg[0], indent, 3, int2)}}` : recPrint(arg[0], indent, 2, int2))} `), int2) ||
+            recPrint(obj[0], indent, 0, int2) + obj[1].map(arg => ' ' + (arg[1] ? `{${recPrint(arg[0], indent, 3, int2)}}` : recPrint(arg[0], indent, 2, int2))).join(''))
+          case 'case': return recPrint(obj[0], indent++, 0, int2) + ' |' + obj[1].map(match => '\n' + ' '.repeat(2 * indent) + recPrint(match, indent, 0, int2))
         }
       } else if (testObj(Name)) {
         switch (obj.ctor) {
@@ -1377,27 +1545,27 @@ var Reason = (options = {}) => {
         }
       } else if (testObj(Pat)) {
         switch (obj.ctor) {
-          case 'patvar': return (obj[1] ? '.' : '') + recPrint(obj[0], 0, int2)
+          case 'patvar': return (obj[1] ? '.' : '') + recPrint(obj[0], indent, 0, int2)
           case 'patbvar': anns[int2 - obj[0] - 1] = 1; return vars(obj[0])
-          case 'patdcon': return (obj[2] ? '.' : '') + parensIf(int1 > 1 + !obj[1].length, recPrint(obj[0], 0, int2) +
-          obj[1].map(arg => ' ' + (arg[1] ? `{${recPrint(arg[0], 3, int2)}}` : recPrint(arg[0], 2, int2))).join(''))
+          case 'patdcon': return (obj[2] ? '.' : '') + parensIf(int1 > 1 + !obj[1].length, recPrint(obj[0], indent, 0, int2) +
+          obj[1].map(arg => ' ' + (arg[1] ? `{${recPrint(arg[0], indent, 3, int2)}}` : recPrint(arg[0], indent, 2, int2))).join(''))
         }
       } else if (testObj(Match)) {
         switch (obj.ctor) {
-          case 'clause': return recPrint(obj[0], 0, int2) + ' := ' + recPrint(obj[1], 0, int2)
-          case 'absurd': return recPrint(obj[0], 0, int2) + ' ()'
+          case 'clause': return recPrint(obj[0], indent, 0, int2) + ' := ' + recPrint(obj[1], indent, 0, int2)
+          case 'impossible': return recPrint(obj[0], indent, 0, int2) + ' ()'
         }
       } else if (testObj(Tele)) {
         return obj.items.map((item, i) => {
           switch (item.ctor) {
-            case 'term': return item[0].ctor === 'global' && typeof item[0][0] === 'number' ? (i ? ' -> ' : '') + recPrint(item[1], 0, int2) :
-              `(${recPrint(item[0], 0, int2) + ' : ' + recPrint(item[1], 0, int2)})`
+            case 'term': return item[0].ctor === 'global' && typeof item[0][0] === 'number' ? (i ? ' -> ' : '') + recPrint(item[1], indent, 0, int2) :
+              `(${recPrint(item[0], indent, 0, int2) + ' : ' + recPrint(item[1], indent, 0, int2)})`
             case 'erased': return `{${(item[0].ctor === 'global' && typeof item[0][0] === 'number' ? '' :
-              recPrint(item[0], 0, int2) + ' : ') + recPrint(item[1], 0, int2)}}`
-            case 'constraint': return `{${recPrint(item[0], 0, int2) + ' = ' + recPrint(item[1], 0, int2)}}`
+              recPrint(item[0], indent, 0, int2) + ' : ') + recPrint(item[1], indent, 0, int2)}}`
+            case 'constraint': return `{${recPrint(item[0], indent, 0, int2) + ' = ' + recPrint(item[1], indent, 0, int2)}}`
           }
-        }).join('') + (obj.items.length ? ' ' : '')
-      } else if (testObj(Ctor)) return recPrint(obj[0]) + ' : ' + recPrint(obj[1]);
+        }).join('') + (obj.items.length > 0 ? ' ' : '')
+      } else if (testObj(Ctor)) return recPrint(obj[0], indent) + ' : ' + recPrint(obj[1], indent);
       else if (typeof obj === 'string') return obj;
       else error.print_bad(obj)
     })(o);
@@ -1434,11 +1602,11 @@ var Reason = (options = {}) => {
     push (decl, n) {
       let ret = n ? new Context(this) : this;
       if (!Array.prototype.isPrototypeOf(decl)) decl = [decl];
-      else if (!decl.length) return ret;
+      else if (decl.length === 0) return ret;
       let d = decl.shift(),
           i = (d[0][0] === '') ? -1 : ret.decls.findIndex(x => x[0][0] === '');
       ret.decls.splice(i === -1 ? ret.decls.length : i, 0, d);
-      return decl.length ? ret.push(decl, false) : ret
+      return decl.length > 0 ? ret.push(decl, false) : ret
     }
     localVal (i) { return this.decls[this.decls.length - i - 1][1] }
     concatTele (...teles) {
@@ -1452,7 +1620,6 @@ var Reason = (options = {}) => {
 
   // Values
   function evaluate (term, ctx = context) {
-    // console.log('eval', term.toString())
     let mbVal, vscrut, local = x => new Decl({sig: [ new Name({global: ['']}), x ]});
     switch (term.ctor) {
       case 'star': return new Value({vstar: []})
@@ -1493,17 +1660,17 @@ var Reason = (options = {}) => {
   }
 
   function quote (value, index = 0) {
-    let name, qname = new Name({quote: [index]});
+    let name, qname = new Value({vfree: [new Name({quote: [index]})]});
     switch (value.ctor) {
       case 'vstar': return new Term({star: []})
-      case 'vpi': return new Term({pi: [ quote(value[0], index), quote(value[1](new Value({vfree: [qname]})), index + 1), value[2]]})
-      case 'vlam': return new Term({lam: [ quote(value[0](new Value({vfree: [qname]})), index + 1), value[1] ]})
+      case 'vpi': return new Term({pi: [ quote(value[0], index), quote(value[1](qname), index + 1), value[2]]})
+      case 'vlam': return new Term({lam: [ quote(value[0](qname), index + 1), value[1] ]})
       case 'vfree': return (name = value[0]).ctor === 'quote' ? new Term({boundvar: [index - name[0] - 1]}) : new Term({freevar: [name]})
       case 'vtcon': return new Term({tcon: [ value[0], value[1].map(v => quote(v, index)) ]})
       case 'vdcon': return new Term({dcon: [ value[0], value[1]
         .map(arg => new Arg({arg: [ quote(arg[0], index), arg[1] ]})) ].concat([value[2]].filter(Boolean))})
       case 'vapp': return new Term({app: [ quote(value[0], index), quote(value[1], index), value[2] ]})
-      case 'vcase': return new Term({case: [ quote(value[0]), value[1] ]})
+      case 'vcase': return new Term({case: [ quote(value[0], index), value[1] ]})
     }
   }
 
@@ -1531,23 +1698,18 @@ var Reason = (options = {}) => {
               return infer(innerArgs = {
                 ctx: ctx.cons(new Decl({sig: [ local, evaluate(term[0], ctx) ]})),
                 term: subst(new Term({freevar: [ local ]}), term[1], false), index: index + 1})
-                .then(type2 => {
-                  args.term = new Term({pi: [term[0], unsubst(new Term({boundvar: [ index ]}), innerArgs.term), term[2]]});
-                  if (type2.ctor !== 'vstar') error.tc_pi_mismatch('range', quote(type2));
-                  return vstar
-                })
+                  .then(type2 => {
+                    args.term = new Term({pi: [term[0], unsubst(new Term({boundvar: [ index ]}), innerArgs.term), term[2]]});
+                    if (type2.ctor !== 'vstar') error.tc_pi_mismatch('range', quote(type2));
+                    return vstar
+                  })
             })
 
           case 'app': return infer(innerArgs = {ctx, term: term[0], index})
             .then(type => {
               term[0] = innerArgs.term;
-              // while (!term[2] && type[2]) {
-              //   let typeVar = new Term({freevar: [ new Name({global: [parser.fresh()]}) ]})
-              //   ctx.extend(new Decl({sig: [ local, typeVar ]}))
-              //   type = type[1](evaluate(typeVar, ctx))
-              // }
-              if (term[2] && !type[2]) error.tc_erasure_mismatch();
               if (type.ctor !== 'vpi') error.tc_app_mismatch(quote(type));
+              if (term[2] && !type[2]) error.tc_erasure_mismatch();
               let [dom, func] = type;
               return check(ctx, term[1], dom, index)
                 .then(({term}) => func(evaluate(term, ctx)))
@@ -1599,7 +1761,7 @@ var Reason = (options = {}) => {
               ctx.cons(new Decl({sig: [ local, typeVal[0] ]})),
               subst(new Term({freevar: [ local ]}), term[0], false),
               typeVal[1](new Value({vfree: [local]})), index + 1)
-              .then(({term}) => ({term: new Term({lam: [unsubst(new Term({boundvar: [ index ]}), term), typeVal[2]]}), type: typeVal}))
+                .then(({term}) => ({term: new Term({lam: [unsubst(new Term({boundvar: [ index ]}), term), typeVal[2]]}), type: typeVal}))
           }
 
           case 'dcon':
@@ -1684,12 +1846,12 @@ var Reason = (options = {}) => {
 
     function constraintToDecls (ctx, term1, term2) {
       let decls = [];
-      if (term1.equal(term2)) return decls;
-      if (term1.ctor === 'app' && term2.ctor === 'app') decls = decls
-        .concat(constraintToDecls(ctx, term1[0], term2[0]))
-        .concat(constraintToDecls(ctx, term1[1], term2[1]));
-      else if (term1.ctor === 'freevar') return [ new Decl({def: [term1[0], term2]}) ];
+      if (term1.ctor === 'freevar') return [ new Decl({def: [term1[0], term2]}) ];
       else if (term2.ctor === 'freevar') return [ new Decl({def: [term2[0], term1]}) ];
+      else if (term1.ctor === 'dcon' && term2.ctor === 'dcon') decls = decls
+        .concat(term1[1].map((arg, i) => constraintToDecls(ctx, arg[0], term2[1][i][0])));
+      else if (~['pi', 'app', 'case'].findIndex(tm => term1.ctor === tm || term2.ctor === tm) ||
+        (term1.ctor === 'lam' && term1[1]) || (term2.ctor === 'lam' && term2[1])) return decls;
       else error.tc_constraint_cannot_eq()
     }
 
@@ -1792,9 +1954,9 @@ var Reason = (options = {}) => {
     function declarePats (ctx, name, patArgs, items) {
       let rightItems = items, decls = [], decls1, names = [], names1, i = 0;
       while (
-        (i !== patArgs.length && !rightItems.length && error.tc_pat_dcon_len(false)) ||
-        (i === patArgs.length && rightItems.length && error.tc_pat_dcon_len(true)) ||
-        i !== patArgs.length || rightItems.length
+        (i !== patArgs.length && rightItems.length === 0 && error.tc_pat_dcon_len(false)) ||
+        (i === patArgs.length && rightItems.length > 0 && error.tc_pat_dcon_len(true)) ||
+        i !== patArgs.length || rightItems.length > 0
       ) {
         let ep = true, pat = patArgs[i][0];
         switch (rightItems[0].ctor) {
@@ -1822,8 +1984,8 @@ var Reason = (options = {}) => {
           items = substTele(ctx, result.ddef[0].concat(result.ddef[1]), type[1], result.cdef.tail()),
           rightItems = items, args = [], i = 0;
       while (
-        (!(rightItems.length ^ (i === pat[1].length)) && error.tc_pat_len(pat[0])) ||
-        rightItems.length
+        (!((rightItems.length > 0) ^ (i === pat[1].length)) && error.tc_pat_len(pat[0])) ||
+        rightItems.length > 0
       ) {
         let ep = true;
         switch (rightItems[0].ctor) {
@@ -1849,7 +2011,7 @@ var Reason = (options = {}) => {
         let result = ctx.lookup(term[0], 'ctor', type[0]),
             items = substTele(ctx, result.ddef[0].concat(result.ddef[1]), type[1], result.cdef.tail()),
             rightItems = items, decls = [], i = 0;
-        for (; rightItems.length; i++) {
+        for (; rightItems.length > 0; i++) {
           let thisItem = rightItems.shift();
           switch (thisItem.ctor) {
             case 'term': case 'erased':
@@ -1910,7 +2072,7 @@ var Reason = (options = {}) => {
           }
         })
       }
-      if (pats.length > 0 && pats[0].ctor !== 'patdcon') return;
+      if (pats.length > 0 && pats[0].ctor !== 'patdcon') return Promise.resolve();
       if (type.ctor !== 'tcon' ) error.tc_mismatch(type, 'Type Constructor');
       let result = ctx.lookup(type[0], 'data');
       if (result.cdef === null) error.tc_dcon_cannot_infer();
@@ -1933,19 +2095,18 @@ var Reason = (options = {}) => {
     }
 
     function terminationCheck (ctx, name, term) {
-      // term.traverse(function (tm) {
-      //   if (tm.ctor === 'case') {
-      //     if (tm[0].equal(new Term({freevar: [name]}))) {
-      //       tm[0].traverse(function (cstm) {
-      //
-      //       });
-      //     } else {
-      //       tm[1].forEach(clause => {
-      //
-      //       })
-      //     }
-      //   }
-      // })
+      term.traverse(function (tm) {
+        if (tm.ctor === 'case') {
+          tm[1].forEach(clause => {
+            let matrixArgs = []
+            return clause.traverse(function (cstm) {
+              if (tm[0].equal(new Term({freevar: [name]}))) {
+
+              }
+            })
+          })
+        }
+      })
     }
 
     // Main typecheck
@@ -2030,8 +2191,11 @@ var Reason = (options = {}) => {
 
   // API
 
-  const setOptions = opts => { Object.assign(options, opts); debug = options.debug, printer = options.printer },
-        R = { Data, Sig, Def, setOptions, context },
+  const setOptions = opts => {
+          Object.assign(options, opts);
+          debug = 'debug' in options ? options.debug : {};
+          printer = 'printer' in options ? options.printer : {} },
+        R = { Data, Sig, Def, setOptions, context, parser },
         sequence = (p => fn => p = fn ? p.then(fn) : p)(Promise.resolve());
   Object.defineProperty(R, 'ready', { get () { return sequence(() => new Promise(r => queueMicrotask(r))) } }); // TODO: make all props read-only
 
