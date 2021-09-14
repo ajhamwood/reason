@@ -16,6 +16,8 @@ Development references:
 * [Eliminating the problems of hidden-lambda insertion: Restricting implicit arguments for increased predictability of type checking in a functional programming language with dependent types](http://www.cse.chalmers.se/~abela/MScThesisJohanssonLloyd.pdf)
 * [Cubical Agda: A Dependently Typed Programming Language with Univalence and Higher Inductive Types](https://staff.math.su.se/anders.mortberg/papers/cubicalagda2.pdf)
 
+<br />
+
 # Features
 
 ## JavaScript API
@@ -26,19 +28,19 @@ To request asynchronous typechecking of **Reason** code either use eg `R.ready`,
 let R = Reason();
 
 // First method
-let identity = new R.Def(
-  "id", "(t , x => x) : (T : Type) -> T -> T"
-);
+let identity = new R
+      .Def("id", "(t , x => x) : (T : Type) -> T -> T");
 await R.ready;
 
 // Second method
-let identity = await new R.Def(
-  "id", "(t , x => x) : (T : Type) -> T -> T"
-).ready;
+let identity = await new R
+      .Def("id", "(t , x => x) : (T : Type) -> T -> T").ready;
 ```
 
+<br />
+
 ### One-line definitions using `R.Def(name, term)`
-Create a simple definition using annotation syntax `term : Type`. In almost all cases, you will need to surround both keywords and user-defined terms with spaces. Phrases like `term: Type` or `term:Type` will not typecheck. Besides annotations, *Lambda* terms are written like `x , y , z => expr`, and *pi* terms (type terms corresponding to functions) are written like `A -> B -> C`.
+Create a simple definition using annotation syntax `term : Type`. In almost all cases, you will need to surround both keywords and user-defined terms with spaces. Phrases like `term: Type` or `term:Type` will not typecheck. Besides annotations, *Lambda* terms are written like `x , y , z => expr`, and *Pi* terms (type terms corresponding to functions) are written like `A -> B -> C`.
 
 After typechecking, the your definition will be available in the core syntax through `myTerm.term`, the result of running `myTerm` will be at `myTerm.result`, and the computed type of the result will be at `myTerm.type`.
 ```js
@@ -62,6 +64,8 @@ idid.result.print(); // == "x , y => y"
 idid.appliedTerms; // == [ idT(), id() ]
 ```
 
+<br />
+
 ### Separating type signature and term definition using `R.Sig(name, typeTerm)`
 When writing more involved code, it can be handy to separate out the signature and definition into their own sections. A signature by itself will have a limited property list, but the result of giving `Sig` first, then `Def`, will be indistinguishable from giving them together in `Def`.
 ```js
@@ -71,6 +75,8 @@ constant.type.print(); // == "(x : Type) -> (x) -> (x) -> x"
 
 (constant = await id2.Def("t , x , y => x").ready).print; // == "x , y , z => y"
 ```
+
+<br />
 
 ### Defining datatypes using `R.Data(name, typeCon, [...dataCon])`
 As with other functional languages, Data structures in Reason are defined by giving a type constructor, along with zero or more data constructors. As datatypes can also take arguments if they are a type family, they too are accessed as functions.
@@ -89,80 +95,90 @@ Data constructors are written like `DataCon : Args -> TypeCon`. If they take two
 ```js
  // Demonstrating that 2 + 2 = 4
 
-let Nat = await new R.Data(
-      "Nat", "Type",
-      [ "Z : Nat",
-        "S : Nat -> Nat" ]).ready, // Must typecheck before they can be used
-    addTwo = await new R.Sig(
-      "addTwo", "Nat -> Nat" ).Def(
-      "n => S (S n)").ready;
+let Nat = await new R
+      .Data("Nat", "Type",
+            [ "Z : Nat",
+              "S : Nat -> Nat" ]).ready, // Must typecheck before they can be used
+    addTwo = await new R
+      .Sig("addTwo", "Nat -> Nat")
+      .Def("n => S (S n)").ready;
 
 let four = await addTwo( Nat().s( Nat().s( Nat().z() ) ) ).ready;
 four.print; // == "addTwo (S (S Z))"
 four.result.print(); // == S (S (S (S Z)))
 ```
 
+<br />
+
 ### Converting JS objects to Reason terms and vice versa: `R.Data(name, typeCon, [...{[dataCon]: {...toJS}}], {fromJS})`
 This definition format allows for user-defined converters between the Reason computation context and the ambient JavaScript context. Each data constructor hash must contain a single key-value pair.
 ```js
-let Bool = await new R.Data(
-      "Bool", "Type",
-      [ { "False : Bool": { toString: () => "F", valueOf: () => false } },
-        { "True : Bool": { toString: () => "T", valueOf: () => true } } ],
-      { fromJS: v => v ? Bool().true() : Bool().false() }).ready;
+let Bool = await new R
+      .Data("Bool", "Type",
+          [ { "False : Bool": { toString: () => "F", valueOf: () => false } },
+            { "True : Bool": { toString: () => "T", valueOf: () => true } } ],
+          { fromJS: v => v ? Bool().true() : Bool().false() }).ready;
 
 let t = Bool().fromJS(true);
-t.print // == 'True'
-t.toString() // == "T"
+t.print; // == 'True'
+t.toString(); // == "T"
 ```
+
+<br />
 
 ### Parametrised types
 For data types which take one or more fully general parameters to be constructed, the type constructor must be written with a `:` separator, parameters going on the left. Parameters are written like `(a : A)(b : B)(c : C)`.
 
 It is also possible to write converters for parametrised types by using `this` within the `fromJS` function body: a parameter labelled `P` in the type constructor will be available in lowercase as `this.p`, and all data constructors will be available in the same way. In the reverse direction, arguments to data constructors will be available as an `Array` on `this`.
 ```js
-let List = new await R.Data(
-      "List", "(A : Type) : Type",
-      [ { "Nil : List A": { toString: () => '[]', valueOf: () => [] } },
-        { "Cons : A -> List A -> List A":
-          { toString () { return '[ ' + (this[1].name === "Cons" ?
-              this[0].toString() + ', ' + this[1].toString().slice(2) :
-              this[0].toString() + ' ]') },
-            valueOf () { return [ this[0].valueOf() ].concat(this[1].valueOf()) } } } ],
-      { fromJS (v) { let p = () => v.length ?
-          this.cons(this.a.fromJS(v.shift()), p()) :
-          this.nil(); return p() } } ).ready;
+let List = new await R
+      .Data("List", "(A : Type) : Type",
+          [ { "Nil : List A": { toString: () => '[]', valueOf: () => [] } },
+            { "Cons : A -> List A -> List A":
+              { toString () { return '[ ' + (this[1].name === "Cons" ?
+                  this[0].toString() + ', ' + this[1].toString().slice(2) :
+                  this[0].toString() + ' ]') },
+                valueOf () { return [ this[0].valueOf() ].concat(this[1].valueOf()) } } } ],
+          { fromJS (v) { let p = () => v.length ?
+              this.cons(this.a.fromJS(v.shift()), p()) :
+              this.nil(); return p() } }).ready;
 
-let someList = List(Bool()).fromJS([true, false])
-somelist.print // == "Cons True (Cons False Nil)"
-somelist.toString() // == "[ T, F ]"
+let someList = List(Bool()).fromJS([true, false]);
+somelist.print; // == "Cons True (Cons False Nil)"
+somelist.toString(); // == "[ T, F ]"
 ```
+
+<br />
 
 ### Case expressions: `R.Sig(...).Def({scrutinee: [...clause]})`
 This construct opens the door to richer functions that are defined based on case analysis of the inputs. The scrutinee selects which function argument to analyse and is written like `a b c | a`, and clauses provide return values and are written like `Con x y := z`.
 ```js
-let not = await new R.Sig(
-      "not", "Bool -> Bool" ).Def({
-      "b | b":
-      [ "True  := False",
-        "False := True" ] }).ready;
+let not = await new R
+      .Sig( "not", "Bool -> Bool" )
+      .Def( { "b | b":
+              [ "True  := False",
+                "False := True" ] } ).ready;
 
-(await not(Bool().true()).ready).result.print() // == 'False'
+(await not(Bool().true()).ready).result.print(); // == 'False'
 ```
+
+<br />
 
 ### Pattern match expressions: `R.Sig(...).Def([...clause])`
 ML-style function definition. Clauses are written like `@ a b c := d`, where patterns can be a variable, wildcard `_`, or have constructors and variables nested to any level.
 
 Recursive functions must recurse in such a way that the applied arguments taken together are always structurally getting smaller (eg below, the `m` in `half m` has a smaller structure than the `S (S m)` in `half (S (S m))`).
 ```js
-let half = await new R.Sig(
-      "half", "Nat -> Nat" ).Def([
-      "@  Z        := Z",
-      "@ (S  Z)    := Z",
-      "@ (S (S m)) := S (half m)" ]).ready
+let half = await new R
+      .Sig( "half", "Nat -> Nat" )
+      .Def(["@  Z        := Z",
+            "@ (S  Z)    := Z",
+            "@ (S (S m)) := S (half m)"]).ready;
 
-(await half(Nat().fromJS(5)).ready).result.print() // == "S (S Z)"
+(await half(Nat().fromJS(5)).ready).result.print(); // == "S (S Z)"
 ```
+
+<br />
 
 ## Reason language features
 Language features described above are:
@@ -181,101 +197,145 @@ Rather than only having terms written with the reference on the left and the arg
 
 A mixfix operator may start with an underscore like `_a`, end with one like `a_`, do both like `_a_`, or neither like `a_b`, and have any number greater than or equal to one in total. When writing a partially applied mixfix operator, the outside underscores are optional.
 ```js
-let plus = await new R.Sig(
-      "_+_", "Nat -> Nat -> Nat" ).Def([
-      "@  Z    n := n",
-      "@ (S m) n := S (m + n)" ]).ready;
-(await new R.Def("onePlusOne", "(+ (S Z)) (S Z) : Nat").ready).result.print() // == S (S Z)
+let plus = await new R
+      .Sig( "_+_", "Nat -> Nat -> Nat" )
+      .Def(["@  Z    n := n",
+            "@ (S m) n := S (m + n)"]).ready;
+
+(await new R.Def("onePlusOne", "(+ (S Z)) (S Z) : Nat").ready).result.print(); // == S (S Z)
 ```
+
+<br />
 
 ### Indexed types
 While type parameters are fully general, the indices of an indexed type are at least partially specialised, and share some information with terms of that type. Type information for indexes are included on the right side of the type constructor separator, and have the same structure as data constructors, except that there must be a `Type` term at the right: `(a : A)(b : B) -> C -> Type`.
 ```js
-let Vec = await new R.Data(
-      "Vec", "(A : Type) : Nat -> Type",
-      [ { "[] : Vec A Z": { toString: () => '[]', valueOf: () => [] } },
-        { "_::_ : {n : Nat} -> A -> Vec A n -> Vec A (S n)":
-          { toString () { return '[ ' + (this[1].name === "_::_" ?
-              this[0].toString() + ', ' + this[1].toString().slice(2) :
-              this[0].toString() + ' ]') },
-            valueOf () { return [ this[0].valueOf() ].concat(this[1].valueOf()) } } } ],
-      { fromJS (v) { let p = () => v.length ?
-          this['_::_'](this.a.fromJS(v.shift()), p()) :
-          this['[]'](); return p() } } ).ready;
+let Vec = await new R
+      .Data("Vec", "(A : Type) : Nat -> Type",
+          [ { "[] : Vec A Z": { toString: () => '[]', valueOf: () => [] } },
+            { "_::_ : {n : Nat} -> A -> Vec A n -> Vec A (S n)":
+              { toString () { return '[ ' + (this[1].name === "_::_" ?
+                  this[0].toString() + ', ' + this[1].toString().slice(2) :
+                  this[0].toString() + ' ]') },
+                valueOf () { return [ this[0].valueOf() ].concat(this[1].valueOf()) } } } ],
+          { fromJS (v) { let p = () => v.length ?
+              this['_::_'](this.a.fromJS(v.shift()), p()) :
+              this['[]'](); return p() } }).ready;
 ```
+
+<br />
 
 ## Planned features
 
 ### Near future
 ```js
-// Implicit arguments
-let doubleVec = new R.Sig(
-  "doubleVec", "{A : Type}{m : Nat} -> Vec A m -> Vec A (m + m)" ).Def([
-    "@ .{m} [] := []",
-    "@ .{m} ({m = S k} a :: as) := {S (S (k + k))} a :: ({S (k + k)} a :: (doubleVec {k + k} as))" ]);
+// Implicit arguments, inaccessible patterns
+let doubleVec = await new R
+      .Sig( "doubleVec", "{A : Type}{m : Nat} -> Vec A m -> Vec A (m + m)" )
+      .Def(["@ .{m} [] := []",
+            "@ .{m} ({m = S k} a :: as) := " +
+                "{S (S (k + k))} a :: ({S (k + k)} a :: (doubleVec {k + k} as))"]).ready;
+
+let someVec = await doubleVec(Vec(Nat()).from([0,1])).ready;
+someVec.result.print(); // == "[ 0, 0, 1, 1 ]"
+someVec.type.print(); // == "Vec 4 Nat"
 
 // Fixity annotations
-let Leq = await new R.Data(
-      "_<=_ r20", "Nat -> Nat -> Type",
-      [ "LZ : {n : Nat} -> Z <= n",
-        "LS : {m n : Nat} (p : m <= n) -> S m <= S n" ]).ready;
+let Leq = await new R
+      .Data("_<=_ r20", "Nat -> Nat -> Type",
+            [ "LZ : {n : Nat} -> Z <= n",
+              "LS : {m n : Nat} (p : m <= n) -> S m <= S n" ]).ready;
 
 // Equality type
-let cong = new R.Sig(
-      "cong", "{a b : Type}{c d : a} -> (f : a -> b) -> c = d -> f c = f d").Def(
-      { "g p | p": [ "Refl := Refl" ] }),
-    antisym = new R.Sig(
-      "antisym", "(m n : Nat) -> m <= n -> n <= m -> m = n" ).Def([
-        "@ .Z .Z (LZ .{Z}) (LZ .{Z}) := Refl",
-        "@ .(S k) .(S l) (LS {k}{l} x) (LS .{l}.{k} y) := cong (a => S a) (antisym k l x y)" ])
+let cong = new R
+      .Sig( "cong", "{a b : Type}{c d : a} -> (f : a -> b) -> c = d -> f c = f d" )
+      .Def( { "g p | p":
+              [ "Refl := Refl" ] } ),
+    antisym = new R
+      .Sig( "antisym", "(m n : Nat) -> m <= n -> n <= m -> m = n" )
+      .Def(["@ .Z .Z (LZ .{Z}) (LZ .{Z}) := Refl",
+            "@ .(S k) .(S l) (LS {k}{l} x) (LS .{l}.{k} y) := " +
+                "cong (a => S a) (antisym k l x y)"]);
 ```
 ## Coming soon
 ```js
+// Injecting JS terms into context
+let twoLTtwo = await cong("twoLTtwo", addTwo(), Leq(Nat.z(), Nat.z()).lz()).ready;
+
+// Monadic converters
+let List = new R
+      .Data("List", "(A : Type) : Type",
+          [ { "[] : List A":
+            { toString: p => p.then(v => v ? `[ ${v.join(', ')} ]` : '[]') } },
+              "_::_ : A -> List A -> List A":
+                p => p.then(v => v.?concat(this[0]) ?? [this[0]] ) ],
+          { fromJS: ... });
+
 // Record types
-let Functor = new R.Record(
-      "Functor", "(f : Type -> Type) : Type",
-      [ { "map : {a, b : Type} -> (a -> b) -> f a -> f b":
-        { ??? } } ],
-      { fromJS: ??? }),
-    Applicative = new R.Record(
-      "Applicative", "(f : Type -> Type) : Type",
-      [ "pure : {a : Type} -> a -> f a"
-        "(_<*>_ l2) : {a, b : Type} -> f (a -> b) -> f a -> f b" ])
+let Functor = new R
+      .Record("Functor", "(F : Type -> Type) : Type",
+            [ { "map : {A B : Type} -> (A -> B) -> F A -> F B":
+              { toString () { return this[0].toString() },
+                valueOf () { return this[0].valueOf() } } } ]),
+    listEndo = Functor(List())
+      .Def( "listEndo", [
+              "map @ f [] := []",
+              "map @ f (x :: xs) := (f x) :: (map f xs)" ],
+            { fromJS (v) { return this.f({ map (g) {
+                return this.f(this.a.fromJS(v)).map(g) } }) } } );
+
+(await listEndo(Nat()).fromJS([1,2,3]).map(addTwo).ready).result.valueOf() // [3, 4, 5]
 
 // Copatterns
-let applicativeFunctor = new R.Sig(
-  "applicativeFunctor", "{A : Type} -> Functor (Applicative A)").Def([
-    "map @ f x := pure f <*> x" ])
+let Applicative = new R
+      .Record("Applicative", "(Ap : Type -> Type) : Type",
+              [ "pure : {A : Type} -> A -> Ap A"
+                "(_<*>_ l2) : {A B : Type} -> Ap (A -> B) -> Ap A -> Ap B" ]),
+    apEndo = Functor(Applicative()).Def("apEndo", [ "map @ f x := pure f <*> x" ]),
+    apComp = new R
+      .Record("apComp", "{F : Type -> Type}{G : Type -> Type} -> " +
+                        "Applicative F -> Applicative G -> Applicative (x => F (G x))", [
+                "(@ aF aG).pure a  := aF.pure (aG.pure a)",
+                "f (@ aF aG).<*> a := (apEndo aF).map (aG.<*>) f aF.<*> a" ]);
 
-// Let/where bindings
-let mirror = new R.Sig(
-      "mirror", "{a : Type} -> List a -> List a" ).Def([
-        "@ xs := xs ++ xs'",
-        "xs' := reverse xs" ])
-
-// Case bindings
-let lookupDefault = new R.Sig(
-      "lookupDefault", "{a : Type} -> Nat -> List a -> a -> a" ).Def(
-        { "@ i xs def := list_lookup i xs": [
-          "Nothing := def",
-          "Just x  := x"   ] })
+// Let bindings
+let mirror = new R
+      .Sig( "mirror", "{a : Type} -> List a -> List a" )
+      .Def(["@ xs := xs ++ xs'",
+            "xs' := reverse xs"]),
+    stateMonad = new R
+      .Record("stateMonad", "{SM : Type} -> Monad (State SM)",
+              [ "((@).return a).runState s := (a , s)",
+               {"(m (@).>>= k).runState s0 := runState (k a) s1":
+                 ["(a , s1) := runstate m s0"]} ]);
+// Where bindings
+let reverse = new R
+      .Sig( "reverse", "{A : Type} -> List A -> List A" )
+      .Def([{ "{A} xs := rev-append xs []":
+             [{ "rev-append : List A -> List A -> List A":
+               ["@ [] ys := ys",
+                "@ (x :: xs) ys := rev-append xs (x :: ys)"] }] }]);
 
 // Namespaces
-let VecEq = new R.Namespace(ns => ({
-      EqVecs: ns.Data(
-        "(_~=~_ r4)", "{m n : Nat} -> Vec a m -> Vec a n -> Type", [
-          "NilCong : Nil ~=~ Nil",
-          "ConsCong x y : {xs, ys} -> (x = y) -> (xs ~=~ ys) -> Cons x xs ~=~ Cons y ys" ]),
-      eqVecsEqLength: ns.Sig(
-        "eqVecsEqLength", "{m n : Nat}{xs : Vec a m}{ys : Vec a n} -> (xs ~=~ ys) -> m = n" ).Def(
-          "@ NilCong := Refl",
-          "@ (ConsCong _ e) := cong (a => S a) (eqVecsEqLength e)" ) }));
+let VecEq = new R.Namespace(vecEq => ({
+      EqVecs: vecEq
+        .Data("_~=~_ r4", "{m n : Nat} -> Vec a m -> Vec a n -> Type", [
+                "NilCong : Nil ~=~ Nil",
+                "ConsCong x y : {xs : Vec a m}{ys : Vec a n} -> " +
+                               "(x = y) -> (xs ~=~ ys) -> x :: xs ~=~ y :: ys" ]),
+      eqVecsEqLength: vecEq
+        .Sig( "eqVecsEqLength", "{m n : Nat}{xs : Vec a m}{ys : Vec a n} -> " +
+                                "(xs ~=~ ys) -> m = n" )
+        .Def(["@ NilCong := Refl",
+              "@ (ConsCong _ _ e) := cong (a => S a) (eqVecsEqLength e)"]) }));
 
 // Cubical types: I, transp => transpX, PathP, PartialP, hcomp => ghcomp, Glue
-let funExt = new R.Sig(
-      "funExt", "{A B : Type}{f g : A -> B}(p : (x : A) -> f x = g x) -> f = g" ).Def([
-      "@ p i x := p x i" ]),
-    transport = new R.Sig(
-      "transport", "{A B : Type} -> A = B -> A -> B" ).Def([
-      "@ p a := transp (i => p i) left a" ])
+let funExt = new R
+      .Sig( "funExt", "{A B : Type}{f g : A -> B}(p : (x : A) -> f x = g x) -> f = g" )
+      .Def(["@ p i x := p x i"]),
+    transport = new R
+      .Sig( "transport", "{A B : Type} -> A = B -> A -> B" )
+      .Def(["@ p a := transp (i => p i) left a"])
+
+// Well-typed WebAssembly
 ```
