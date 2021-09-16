@@ -18,7 +18,7 @@
   // Testing
 
   const R = Reason({
-    debug: {lexer: false, parser: false, parsedDecl: true, typechecker: true}
+    debug: {lexer: false, parser: false, parsedDecl: false, typechecker: false}
   });
   R.setOptions({ printer: { noMixfixes: false } });
 
@@ -230,8 +230,9 @@
     // console.log(`%cmbElement =`, 'font-weight: bold; color: deeppink', mbElement.result.print())
     //
     //
-    R.setOptions({ debug: { parsedDecl: true, typechecker: true } });
+    // R.setOptions({ debug: { parsedDecl: true, typechecker: true } });
     // R.setOptions({ debug: { lexer: true, parser: true } });
+    R.setOptions({ debug: { } });
     Vec = await new R.Data(
       "Vec", "(A : Type) : Nat -> Type",
       [ { "[] : Vec A Z": { toString: () => '[]', valueOf: () => [] } },
@@ -251,6 +252,11 @@
     //   "tail", "{A : Type}{m : Nat} -> Vec A (S m) -> Vec A m" ).Def([
     //     "@ {A} .{m} (_::_ {m} y ys) := ys",
     //     "@ {A} .{m} [] ()" ]);
+    let someVec = await new R.Def("someVec", "_::_ {(S (S Z))} (S (S (S (S Z)))) (_::_ {(S Z)} (S (S Z)) (_::_ {Z} (S Z) [])) : Vec Nat (S (S (S Z)))").ready,
+        headofVec = await new R.Def("headOfVec", "head {Nat}{(S (S Z))} someVec : Nat").ready;
+    console.log(`%cheadOfVec =`, 'font-weight: bold; color: deeppink', headOfVec.result.print());
+    // console.log(`%chead someVec =`, 'font-weight: bold; color: deeppink',
+    //   (await (head(Nat(), Nat().s(Nat().s(Nat().z())), someVec)).ready).result.print());
     // doubleVec = new R.Sig(
     //   "doubleVec", "{A : Type}{m : Nat} -> Vec A m -> Vec A (m + m)" ).Def([
     //     "@ {A} {m} [] := []",
@@ -297,9 +303,8 @@
 
     Leq = await new R.Data(
       "_<=_ r20", "Nat -> Nat -> Type",
-      [ "LZ : {n : Nat} -> Z <= n",
-        "LS : {m n : Nat} (p : m <= n) -> (S m) <= (S n)" ]
-    ).ready;
+      [ "LZ : {l : Nat} -> Z <= l",
+        "LS : {m n : Nat} (p : m <= n) -> (S m) <= (S n)" ]).ready;
 
     ltZero = new R.Sig('ltZero', '{n : Nat} -> (n <= Z)');
 
