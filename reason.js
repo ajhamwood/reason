@@ -4,7 +4,7 @@ var Reason = (options = {}) => {
   // Errors and logging
 
   const error = new Proxy({
-          append (e1, which, ...args) { try { error[which](...args) } catch (e2) { console.log(e1); throw e2 } }
+          append (e1, which, ...args) { try { error[which](...args) } catch (e2) { e1.message += '\n' + e2.message; throw e1 } }
         }, { get (o, prop) {
           if (prop in o) return o[prop];
           else return (...args) => { throw new Error((({
@@ -44,8 +44,8 @@ var Reason = (options = {}) => {
             print_bad: val => `Print error: unprintable argument ${val}`,
 
             // Typechecking errors
-            tc_mismatch: (tested, given, term) => `Type error: mismatch at type\n    ${print(tested)}\nexpecting type\n    ${print(given)}${
-              term ? `\nat term\n    ${print(term)}` : ''}`,
+            tc_at: (name, term) => `At declaration ${print(name)} := ${print(term)}`,
+            tc_mismatch: (tested, given) => `Type error: mismatch at type\n    ${print(tested)}\nexpecting type\n    ${print(given)}`,
             tc_cannot_infer: which => `Type error: cannot infer type of ${which}`,
             tc_lam_mismatch: ctor => `Type error: lambda has Pi type, not ${ctor}`,
             tc_ann_mismatch: tested => `Type error: annotation should have type Type, found ${print(tested)}`,
@@ -65,7 +65,7 @@ var Reason = (options = {}) => {
 
             tc_erased_var_subst: () => 'Type error: erased variable used in lambda',
             tc_erasure_mismatch: () => 'Type error: erasure mismatch',
-            tc_constraint_cannot_eq: (lhs, rhs) => `Cannot equate lhs and rhs of constraint ${print(lhs)} = ${print(rhs)}`,
+            tc_constraint_cannot_eq: (lhs, rhs) => `Type error: Cannot equate lhs and rhs of constraint ${print(lhs)} = ${print(rhs)}`,
 
             tc_erased_pat: () => 'Type error: cannot pattern match erased arguments',
             tc_pat_dcon_len: dir => `Type error: ${dir ? 'too many' : 'not enough'} patterns in match for data constructor`,
@@ -73,7 +73,8 @@ var Reason = (options = {}) => {
             tc_pat_cannot_omit: name => `Type error: case for ${print(name)} cannot be omitted (yet)`,
             tc_dcon_cannot_infer: () => 'Type error: cannot infer data constructor',
             tc_missing_cases: l => `Type error: missing cases for ${l.map(x => print(x)).join(', ')}`,
-            tc_subpat_cannot_dcon: () => 'Type error: cannot use data constructor in subpattern (yet)',
+
+            eval_absurd: tm => `Evaluation error: tried to apply ${tm.print()} to absurd case`,
 
             tc_internal: msg => 'Type error: internal construct' + msg ? '\n  ' + msg : '',
 
@@ -185,8 +186,8 @@ var Reason = (options = {}) => {
                 wait('data', fresh);
                 jsCtTerm.appliedTerms = termArgs;
                 sequence(() => typecheck([
-                  new Decl({sig: [ new Name({global: [fresh]}), jsTyTerm.term ]}),
-                  new Decl({def: [ new Name({global: [fresh]}), term ]})
+                  new Decl({sig: [ new Name({global: ['', fresh]}), jsTyTerm.term ]}),
+                  new Decl({def: [ new Name({global: ['', fresh]}), term ]})
                 ])).then(res => {
                   let { term, type } = res.find(decl => decl.declName === 'def');
                   Object.assign(jsCtTerm, { term, type, print: print(term) });
@@ -206,9 +207,9 @@ var Reason = (options = {}) => {
             let fresh = parser.fresh();
             wait('data', fresh);
             sequence(() => typecheck([
-              new Decl({sig: [ new Name({global: [fresh]}), type ]}),
+              new Decl({sig: [ new Name({global: ['', fresh]}), type ]}),
               new Decl({def: [
-                new Name({global: [fresh]}),
+                new Name({global: ['', fresh]}),
                 new Term({tcon: [ new Name({global: [name]}), typeArgs.map(tm => tm.term) ]}) // TODO: if no term, raise error
               ]})
             ], context)).then(res => {
@@ -315,7 +316,7 @@ var Reason = (options = {}) => {
                 fresh = parser.fresh();
             Object.assign(jsApTerm, { term, print: print(term) });
             wait('data', fresh);
-            sequence(() => typecheck([ new Decl({def: [ new Name({global: [fresh]}), term ]}) ])).then(ress => {
+            sequence(() => typecheck([ new Decl({def: [ new Name({global: ['', fresh]}), term ]}) ])).then(ress => {
               ress.forEach(res => {
                 let { declName, term, type } = res, result = quote(evaluate(term, context));
                 jsApTerm = Object.assign(jsApTerm, { type, result })
@@ -499,6 +500,7 @@ var Reason = (options = {}) => {
     equal (operand) {
       return this.ctor === operand.ctor &&
         this.every((x, i) => x === operand[i] ||
+          Value.prototype.isPrototypeOf(x) || Value.prototype.isPrototypeOf(operand[i]) ||
           ('equal' in x && x.equal(operand[i])) ||
           (Array.prototype.isPrototypeOf(x) && x.every((y, j) => y.equal(operand[i][j]))))
     }
@@ -522,13 +524,14 @@ var Reason = (options = {}) => {
     print () { return print(this) }
   }
 
+  // Currently restructuring global names: [string name, fv index]
   class Name extends AST('global', 'local', 'quote') {
     equal (operand) {
-      return this.ctor === operand.ctor && this[0] === operand[0]
+      return this.ctor === operand.ctor && ([this, operand].every(t => typeof t[1] === 'undefined') || this[1] === operand[1]) && this[0] === operand[0]
     }
     toString () {
       switch(this.ctor) {
-        case 'global': return 'Global ' + (typeof this[0] === 'number' ? '_' + this[0] : `<${this[0]}>`)
+        case 'global': return 'Global ' + (this[0] === '' ? '' : `<${this[0]}>`) + (typeof this[1] === 'undefined' ? '' : '_' + this[1])
         case 'local': return `Local ${this[0]}`
       } }
   }
@@ -1041,7 +1044,7 @@ var Reason = (options = {}) => {
         }
         function parseTele ({boundvars, types, epsilons}) {
           return types.reduceRight((acc, ty, i) => acc[epsilons[i] ? 'erased' : 'term'](
-            new Name({global: [ boundvars[i] ? boundvars[i].id : parser.fresh() ]}), ty
+            new Name({global: boundvars[i] ? [ boundvars[i].id ] : [ '', parser.fresh() ] }), ty
           ), new Tele())
         }
         switch (clause) {
@@ -1097,7 +1100,7 @@ var Reason = (options = {}) => {
           function isolatedPat (isErased) {
             return alt(() => { // _
               advance('Wildcard?', {value: 'op', id: '_'});
-              let pat = new Pat({patvar: [ new Name({global: [parser.fresh()]}), false ]}), // TODO: inaccessible patterns
+              let pat = new Pat({patvar: [ new Name({global: ['', parser.fresh()]}), false ]}), // TODO: inaccessible patterns
                   iarg = argCsr.length > 0 ?
                     argCsr.reduceRight((a, x) => a[1][x], tr)[0][1].push(new Arg({arg: [pat, isErased]})) :
                     tr[1].push(new Match({clause: [pat, 'null']})); // <-- tree update relAddr, push Match
@@ -1115,7 +1118,7 @@ var Reason = (options = {}) => {
               else if (~parser.dnames.indexOf(name)) { // Case split on data constructor
                 let baseClause = tr[1][treeCsr[0][1]];
                 if (baseClause[1] === 'null') {
-                  let fvName = new Name({global: [ parser.fresh() ]}),
+                  let fvName = new Name({global: [ '', parser.fresh() ]}),
                       newCase = new Term({case: [ new Term({freevar: [fvName]}), [new Match({clause: [ pat, 'null' ]}) ] ]});
                   iarg = baseClause[0][1].push(new Arg({arg: [ new Pat({patvar: [fvName, isInac]}), isErased ]})) - 1; // <-- tree update relAddr, push Arg
                   baseClause[1] = newCase; // <-- tree Update relAddr, set Term
@@ -1407,7 +1410,7 @@ var Reason = (options = {}) => {
             // _
             .catch(() => alt(() => {
               advance('Wildcard?', {value: 'op', id: '_'});
-              return new Pat({patvar: [ new Name({global: [parser.fresh()]}), false ]})
+              return new Pat({patvar: [ new Name({global: ['', parser.fresh()]}), false ]})
             }))
             // t *or* x
             .catch(() => {
@@ -1536,7 +1539,8 @@ var Reason = (options = {}) => {
           if (fun[0].ctor === 'global' && ~parser.mixfixes.findIndex(x => x[0] === fun[0][0])) {
             let lex = lexMixfix(fun[0][0]);
             if (lex.reduce((c, t) => t === '_' ? c + 1 : c, 0) < args.length) return false;
-            return lex.map((token, i) => token === '_' ? (args.shift() || '_') : token).join('').trim()
+            return lex.map((token, i) => token === '_' ? (args.shift() || '_') :
+              (typeof fun[0][1] !== 'undefined' && i === lex.length - 1) ? token + '_' + fun[0][1] : token).join('').trim()
           }
           default: return false
         }
@@ -1571,8 +1575,8 @@ var Reason = (options = {}) => {
           case 'case': return recPrint(obj[0], indent++, 0, int2) + ' |' + obj[1].map(match => '\n' + ' '.repeat(2 * indent) + recPrint(match, indent, 0, int2))
         }
       } else if (testObj(Name)) {
-        switch (obj.ctor) {
-          case 'global': return typeof obj[0] === 'number' ? '_' + obj[0] : parensIf(~parser.mixfixes.findIndex(x => x[0] === obj[0]), obj[0])
+        switch (obj.ctor) { // ISSUE: overloaded meaning of '_'
+          case 'global': return parensIf(~parser.mixfixes.findIndex(x => x[0] === obj[0]), obj[0] + (typeof obj[1] === 'undefined' ? '' : '_' + obj[1]))
           case 'local': return typeof obj[0] === 'number' ? vars(obj[0]) : obj[0]
         }
       } else if (testObj(Pat)) {
@@ -1590,10 +1594,10 @@ var Reason = (options = {}) => {
       } else if (testObj(Tele)) {
         return obj.items.map((item, i) => {
           switch (item.ctor) {
-            case 'term': return item[0].ctor === 'global' && typeof item[0][0] === 'number' ? (i ? ' -> ' : '') + recPrint(item[1], indent, 0, int2) :
-              `(${recPrint(item[0], indent, 0, int2) + ' : ' + recPrint(item[1], indent, 0, int2)})`
-            case 'erased': return `{${(item[0].ctor === 'global' && typeof item[0][0] === 'number' ? '' :
-              recPrint(item[0], indent, 0, int2) + ' : ') + recPrint(item[1], indent, 0, int2)}}`
+            case 'term': return item[0].ctor === 'global' && typeof item[0][1] === 'undefined' ?
+              '(' + recPrint(item[0], indent, 0, int2) + ' : ' + recPrint(item[1], indent, 0, int2) + ')' : (i ? ' -> ' : '') + recPrint(item[1], indent, 0, int2)
+            case 'erased': return '{' + (item[0].ctor === 'global' && typeof item[0][1] === 'undefined' ? recPrint(item[0], indent, 0, int2) + ' : ' : '') +
+              recPrint(item[1], indent, 0, int2) + '}'
             case 'constraint': return `{${recPrint(item[0], indent, 0, int2) + ' = ' + recPrint(item[1], indent, 0, int2)}}`
           }
         }).join('') + (obj.items.length > 0 ? ' ' : '')
@@ -1632,12 +1636,12 @@ var Reason = (options = {}) => {
     cons (decl) { return this.push(decl, true) }
     extend (decl) { return this.push(decl, false) }
     push (decl, n) {
-      let ret = n ? new Context(this) : this;
+      let ret = n ? new Context(this) : this, empty = new Name({global: ['']});
       if (!Array.prototype.isPrototypeOf(decl)) decl = [decl];
       else if (decl.length === 0) return ret;
       let d = decl.shift(),
-          i = (d[0][0] === '') ? -1 : ret.decls.findIndex(x => x[0][0] === '');
-      (d[0][0] === '' || !~ret.decls.findIndex(x => x[0][0] === d[0][0] && x.ctor === d.ctor)) &&
+          i = (d[0].equal(empty)) ? -1 : ret.decls.findIndex(x => x[0].equal(empty)), k;
+      (d[0].equal(empty) || !~ret.decls.findIndex(x => x[0].equal(d[0]))) &&
         ret.decls.splice(i === -1 ? ret.decls.length : i, 0, d);
       return decl.length > 0 ? ret.push(decl, false) : ret
     }
@@ -1670,11 +1674,12 @@ var Reason = (options = {}) => {
         case 'vfree': return new Value({vcase: [ vscrut, term[1] ]});
         case 'vdcon':
         let match = term[1].find(match => match.ctor === 'clause' && match[0].ctor !== 'patdcon' || vscrut[0].equal(match[0][0]));
+        if (typeof match === 'undefined' || match.ctor === 'impossible') error.eval_absurd(vscrut);
         switch (match[0].ctor) {
           case 'patvar': return evaluate(match[1], ctx.cons(new Decl({def: [ match[0][0], vscrut ]})));
           case 'patbvar': return evaluate(match[1], ctx.cons(new Decl({def: [ new Term({boundvar: [ match[0][0] ]}), vscrut ]})));
           case 'patdcon':
-          let decls = match[0][1].filter(x => !x[1]).map((x, i) => {
+          let decls = match[0][1].map((x, i) => {
                 if (x[0].ctor === 'patdcon') error.tc_internal('eval case trying to match on a patdcon');
                 return new Decl({def: [x[0][0], vscrut[1][i][0]]})
               });
@@ -1709,7 +1714,7 @@ var Reason = (options = {}) => {
 
   function typecheck (decls) {
     // Infer/check
-    function infer (args) { //context, term, number -> value
+    function infer (args) { // context, term, number -> value
       let { ctx, term, index = 0 } = args, innerArgs;
       if (debug.typechecker) log('infer', term.toString());
       return Promise.resolve().then(() => {
@@ -1779,9 +1784,8 @@ var Reason = (options = {}) => {
     function check (ctx, term, typeVal, index = 0) { //context, term, term, number -> term:term, type:value
       if (debug.typechecker) {
         log('check', term.toString(), term, typeVal.toString(), typeVal);
-        log('ctx', ctx.decls.slice(), ...ctx.decls.map(x => x.toString()))
+        log('ctx', ...ctx.decls.map(x => x.toString()), ctx.decls.slice())
       }
-      // if (typeVal.ctor === 'vfree' && typeVal[0].ctor === 'global' && typeof typeVal[0][0] === 'number') unify(term, typeVal); //UGLY
       let innerArgs;
       return Promise.resolve().then(() => {
         switch (term.ctor) {
@@ -1798,16 +1802,19 @@ var Reason = (options = {}) => {
           }
 
           case 'dcon':
+          ctx = new Context(ctx);
           let type = quote(typeVal);
           if (typeof term[2] !== 'undefined' && 'equal' in term[2] && !term[2].equal(type)) error.tc_mismatch(term[2], type, term);
           let res = ctx.lookup(term[0], 'ctor', type[0]);
           if (res.cdef === null || res.ddef === null) error.tc_term_not_found(term[0][0], type[0][0]);
           if (res.cdef.length - 1 !== term[1].filter(x => !x[1]).length) error.tc_dcon_arg_len(term[1].length, res.cdef.length - 1);
-          let items = substTele(ctx, res.ddef[0].concat(res.ddef[1]), type[1], res.cdef.tail());
-          substTele(ctx, res.ddef[0].concat(res.ddef[1]), type[1], res.ddef[1].items.reduce((tele, index, i) => tele.constraint(
-            new Term({freevar: [index[0]]}),
-            res.cdef.items[res.cdef.items.length - 1][1][1].slice(res.ddef[0].length)[i]), new Tele()));
-          return tcArgTele(ctx, term[1], items).then(args => ({ term: new Term({dcon: [ term[0], args, typeVal ]}), type: typeVal }))
+          let freshIndexTele = freshen(ctx, res.ddef[1]), freshConTele = freshen(ctx, res.cdef),
+              items = substTele(ctx, res.ddef[0].concat(freshIndexTele), type[1], freshConTele.tail()),
+              indexConstraints = freshIndexTele.items.reduce((tele, index, i) => tele.constraint(
+                new Term({freevar: [index[0]]}),
+                freshConTele.items[freshConTele.items.length - 1][1][1].slice(res.ddef[0].length)[i]), new Tele()),
+              indexSubst = substTele(ctx, res.ddef[0].concat(freshIndexTele), type[1], indexConstraints);
+          return tcArgTele(ctx, term[1], indexSubst.concat(items)).then(args => ({ term: new Term({dcon: [ term[0], args, typeVal ]}), type: typeVal }))
 
           case 'case':
           return infer(innerArgs = {ctx, term: term[0], index})
@@ -1820,10 +1827,10 @@ var Reason = (options = {}) => {
                     decls2 = equateWithPat(ctx, term[0], match[0], typeTerm);
                 return match.ctor === 'impossible' ? acc :
                   check(ctx.cons(decls1.concat(decls2)), match[1], typeVal, index)
-                  .then(({term}) => acc.concat([new Match({clause: [match[0], term]})]))
+                    .then(({term}) => acc.concat([new Match({clause: [match[0], term]})]))
               }), Promise.resolve([]))
                 .then(matches => exhaustivityCheck(ctx, typeTerm, matches.map(x => x[0]))
-                  .then(() => ({term: new Term({case: [term[0], matches, typeVal]}), type: typeVal})))
+                  .then(() => ({term: new Term({case: [term[0], matches, false, typeVal]}), type: typeVal})))
             })
 
           default: return infer(innerArgs = {ctx, term, index})
@@ -1860,16 +1867,31 @@ var Reason = (options = {}) => {
           Array.prototype.isPrototypeOf(v) ? v.map(w => substFV(term1, w, this.name)) : v) })
       }, { name })
     }
-    function getFvs (term) {
+    function getFVs (term) {
       return term.traverse(function (tm) {
-        let someFvs = [];
-        if (tm.constructor === Term && tm.ctor === 'freevar') someFvs = [tm];
-        if (tm.constructor === Term && tm.ctor === 'case') someFvs = tm[1].flatMap(t => getFvs(t[1]));
-        if (tm.constructor === Term && ~['ann', 'app'].indexOf(tm.ctor)) someFvs = tm[0].flatMap(getFvs);
-        if (tm.constructor === Term && ~['pi', 'lam', 'app', 'tcon', 'dcon'].indexOf(tm.ctor)) someFvs = someFvs.concat(tm[1].flatMap(getFvs));
-        if (tm.constructor === Arg) someFvs = getFvs(tm[0]);
-        return someFvs
+        let someFVs = [];
+        if (tm.constructor === Term && tm.ctor === 'freevar') someFVs = [tm];
+        if (tm.constructor === Term && tm.ctor === 'case') someFVs = tm[1].flatMap(t => getFVs(t[1]));
+        if (tm.constructor === Term && ~['ann', 'app'].indexOf(tm.ctor)) someFVs = tm[0].flatMap(getFVs);
+        if (tm.constructor === Term && ~['pi', 'lam', 'app', 'tcon', 'dcon'].indexOf(tm.ctor)) someFVs = someFVs.concat(tm[1].flatMap(getFVs));
+        if (tm.constructor === Arg) someFVs = getFVs(tm[0]);
+        return someFVs
       })
+    }
+
+    function freshen (ctx, tele) {
+      let len = tele.items.length;
+      return tele.items.reduce((a, item, i) => {
+        let fvName = new Name({global: [item.ctor === 'constraint' ? item[0][0][0] : item[0][0], parser.fresh()]});
+        a.items[i] = new Item({[item.ctor]: [item.ctor === 'constraint' ? new Term({freevar: [fvName]}) : fvName,
+          evaluate(substFV(new Term({freevar: [fvName]}), quote(i === 0 ? item[1] : a.items[i][1]), item[0]), ctx) ]}); // needs improving...
+        for (let j = i + 1; j < len; j++) {
+          let newVal = evaluate(substFV(new Term({freevar: [fvName]}), quote((a.items.length > j ? a : tele).items[j][1]), item[0]), ctx);
+          if (a.items.length > j) a.items[j][1] = newVal;
+          else a.items[j] = new Item({[tele.items[j].ctor]: [ tele.items[j][0], newVal ]})
+        }
+        return a
+      }, new Tele())
     }
 
     // Telescopes
@@ -1921,7 +1943,7 @@ var Reason = (options = {}) => {
             }
             switch (rightItems[0].ctor) {
               case 'term':
-              if (arg[1]) throw error.tc_erasure_mismatch();
+              if (arg[1]) return loop(i + 1);
               else return doCheck(i + 1)
 
               case 'erased':
@@ -1931,24 +1953,31 @@ var Reason = (options = {}) => {
               } else return doCheck(i)
 
               case 'constraint':
-              let [item0, item1] = rightItems.shift();
-              if (item0.equal(quote(item1))) return loop(i + 1);
-
-              let resVal = ctx.lookup(item0[0], 'def');
-              if (typeof resVal === 'undefined' && item0.ctor === 'freevar') {
-                ctx.extend(new Decl({def: [item0[0], item1]}));
-                return loop(i + 1)
-              }
-              let res = quote(resVal), item1q = quote(item1);
-              if (res.equal(item1q)) return loop(i + 1);
-              if (res[0].equal(item1q[0])) return tcArgTele(ctx, [], res[1].reduce((acc, arg, i) =>
-                acc.concat([new Item({constraint: [arg[0], item1[1][0][0]]})]), []))
-                .then(() => loop(i + 1));
-
-              error.tc_constraint_cannot_eq(item0, quote(item1))
+              return unify(ctx, ...rightItems.shift()).then(() => loop(i));
             }
           };
       return loop(0).then(() => runtimeArgs)
+    }
+
+    function unify (ctx, item1, item2val) { // TODO: Cycle rule
+      let item2 = quote(item2val);
+      return Promise.resolve().then(() => {
+        if (item1.equal(item2)) return; // Deletion rule
+        if (item1.ctor !== 'freevar' && item2.ctor === 'freevar') [item1, item2, item2val] = [item2, item1, evaluate(item1, ctx)];
+        let resVal = ctx.lookup(item1[0], 'def');
+        // TODO: Replace with new Decl({def: [ new Name({global: [ 'e', parser.fresh() ]}), new Term({eq: [...]}) ]})
+        if (typeof resVal === 'undefined') if (item1.ctor === 'freevar') return ctx.extend(new Decl({def: [item1[0], item2val]}));
+        else if (item1.ctor === 'dcon') { // Do LHS and RHS have the same type? TODO: start using Term:ann
+          if (!item1[0].equal(item2[0])) error.tc_constraint_cannot_eq(item1, item2); // Conflict rule
+          return tcArgTele(ctx, [], item1[1].reduce((acc, arg, ix) =>
+            acc.concat([new Item({constraint: [arg[0], item2val[1][ix][0]]})]), [])) // Injectivity rule
+        } else return;
+        let res = quote(resVal);
+        if (res.equal(item2)) return;
+        if (res[0].equal(item2[0])) return tcArgTele(ctx, [], res[1].reduce((acc, arg, i) =>
+          acc.concat([new Item({constraint: [arg[0], item2val[1][0][0]]})]), []));
+        error.tc_constraint_cannot_eq(res, item2)
+      })
     }
 
     function doSubst (ctx, nameTerms, tele) {
@@ -2138,7 +2167,7 @@ var Reason = (options = {}) => {
                     return acc
                   }, {hds: [], tls: []});
               if (hds.length === 1 && hds[0].ctor !== 'patdcon') patss = tls;
-              else error.tc_subpat_cannot_dcon()
+              else error.internal('checkSubPats')
             } else error.internal('checkSubPats')
           }
         })
@@ -2216,7 +2245,7 @@ var Reason = (options = {}) => {
             check(context, info, mbType).then(({term, type}) => {
               terminationCheck(context, name, term);
               if (typeof name[0] !== 'number') console.log(print(name), ':=', print(term));
-              context.extend(new Decl({def: [name, evaluate(term)]}));
+              context.extend(new Decl({def: [name, evaluate(term, context)]}));
               return acc.concat([{declName: 'def', type: quote(type), term}])
             })
         }
@@ -2228,25 +2257,25 @@ var Reason = (options = {}) => {
             .then(tcIndices => ctors.reduce((p, ctor) => p.then(acc =>
               tcTele(context.cons(new Decl({datasig: [name, tcParams, tcIndices]})).concatTele(tcParams), ctor[1])
                 .then(tcCtor => {
-                  let tail = tcCtor.tail(), type = tcCtor.items.slice(-1)[0];
+                  let type = tcCtor.items.slice(-1)[0];
                   tcParams.items.forEach((item, i) => item[1] || item[0].equal(type[1][1][i][0]) || error.tc_tcon_params(name, type[1][1][i][0], item[0]));
-                  let constraints = type[1][1].reduce((acc, item, i) => {
+                  let k = 0, constraints = type[1][1].reduce((acc, item, i) => {
                     if (i >= params.length && ~parser.dnames.indexOf(item[0][0])) {
-                      let fvName = new Name({global: [ parser.fresh() ]});
+                      let fvName = new Name({global: [ 'e' + k++, parser.fresh() ]}); // TODO: check for string clashes?
                       tcCtor.items[tcCtor.items.length - 1][1][1][i] = new Value({vfree: [ fvName ]});
                       return acc.constraint(new Term({freevar: [ fvName ]}), item)
                     } else return acc
                   }, new Tele());
                   constraints.items.forEach(c => {
-                    let fvs = getFvs(quote(c[1])),
-                        i = tail.items.findIndex(item => {
+                    let fvs = getFVs(quote(c[1])),
+                        i = fvs.length === 0 ? -1 : tcCtor.tail().items.findIndex(item => {
                           let fvi = fvs.findIndex(fv => item[0].equal(fv[0]));
-                          fvs.splice(fvi === -1 ? 0 : fvi, 1);
+                          fvs.splice(fvi, fvi !== -1);
                           return fvs.length === 0
                         });
                     tcCtor.items.splice(i + 1, 0, c)
                   });
-                  positivityCheck(name, ctor[0], tail);
+                  positivityCheck(name, ctor[0], tcCtor.tail());
                   return acc.concat([ new Ctor({ctor: [ ctor[0], tcCtor ]}) ])
                 })), Promise.resolve([])).then(ctors => {
                   let quoteTele = tl => new Tele(...tl.items.map(item =>
@@ -2262,7 +2291,7 @@ var Reason = (options = {}) => {
 
         case 'datasig': error.tc_internal()
       }
-    }), Promise.resolve([]))
+    }).catch(e => error.append(e, 'tc_at', decl[0], decl[1])), Promise.resolve([]))
   }
 
 

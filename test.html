@@ -66,12 +66,12 @@
     // console.log('tt', tt, tt.term.toString(), tt.type.toString(), tt.toString(), tt.valueOf())
     //
     //
-    // Bool = new R.Data(
-    //   'Bool', 'Type',
-    //   [ { 'False : Bool': { toString: () => 'F', valueOf: () => false } },
-    //     { 'True : Bool': { toString: () => 'T', valueOf: () => true } } ],
-    //   { fromJS: v => Bool()[v ? 't' : 'f']() }
-    // );
+    Bool = new R.Data(
+      'Bool', 'Type',
+      [ { 'False : Bool': { toString: () => 'F', valueOf: () => false } },
+        { 'True : Bool': { toString: () => 'T', valueOf: () => true } } ],
+      { fromJS: v => Bool()[v ? 't' : 'f']() }
+    );
     // Maybe = new R.Data(
     //   "Maybe", "(A : Type) : Type",
     //   [ "Just : A -> Maybe A",
@@ -232,29 +232,40 @@
     //
     // R.setOptions({ debug: { parsedDecl: true, typechecker: true } });
     // R.setOptions({ debug: { lexer: true, parser: true } });
-    R.setOptions({ debug: { } });
+    // R.setOptions({ debug: { } });
     Vec = await new R.Data(
       "Vec", "(A : Type) : Nat -> Type",
       [ { "[] : Vec A Z": { toString: () => '[]', valueOf: () => [] } },
         { "_::_ r8 : {n : Nat} -> A -> Vec A n -> Vec A (S n)":
-          { toString () { return '[ ' + (this[1].name === "_::_" ? this[0].toString() + ', ' + this[1].toString().slice(2) : this[0].toString() + ' ]') },
+          { toString () { return '[ ' + (this[1].name === "_::_" ? this[1].toString() + ', ' + this[2].toString().slice(2) : this[1].toString() + ' ]') },
             valueOf () { return [ this[0].valueOf() ].concat(this[1].valueOf()) } } } ],
-      { fromJS (v) { let p = () => v.length ? this['_::_'](this.a.fromJS(v.shift()), p()) : this['[]'](); return p() } } ).ready;
+      { fromJS (v) { let p = () => v.length ? this['_::_'](this.n /* ??? */, this.a.fromJS(v.shift()), p()) : this['[]'](); return p() } } ).ready;
 
-    head = await new R.Sig(
-      "head", "{A : Type}{m : Nat} -> Vec A (S m) -> A" ).Def([
-        "@ {A} .{k} (_::_ {k} y ys) := y" ]).ready;
+    // head = await new R.Sig(
+    //   "head", "{A : Type}{m : Nat} -> Vec A (S m) -> A" ).Def([
+    //     "@ {A} .{k} (_::_ {k} y ys) := y" ]).ready;
     // vecid = new R.Sig(
     //   "vecid", "{A : Type}{m : Nat} -> Vec A m -> Vec A m" ).Def([
     //     "@ {A} .{k} [] := []",
     //     "@ {A} .{k} (_::_ {k} y ys) := _::_ {k} y ys"]);
-    // tail = new R.Sig(
-    //   "tail", "{A : Type}{m : Nat} -> Vec A (S m) -> Vec A m" ).Def([
-    //     "@ {A} .{m} (_::_ {m} y ys) := ys",
-    //     "@ {A} .{m} [] ()" ]);
-    let someVec = await new R.Def("someVec", "_::_ {(S (S Z))} (S (S (S (S Z)))) (_::_ {(S Z)} (S (S Z)) (_::_ {Z} (S Z) [])) : Vec Nat (S (S (S Z)))").ready,
-        headofVec = await new R.Def("headOfVec", "head {Nat}{(S (S Z))} someVec : Nat").ready;
-    console.log(`%cheadOfVec =`, 'font-weight: bold; color: deeppink', headOfVec.result.print());
+    tail = new R.Sig(
+      "tail", "{A : Type}{m : Nat} -> Vec A (S m) -> Vec A m" ).Def([
+        "@ {A} .{m} (_::_ {m} y ys) := ys",
+        "@ {A} .{m} [] ()" ]);
+
+    // let someVec = await new R.Def("someVec", "_::_ {(S (S Z))} (S (S (S (S Z)))) (_::_ {(S Z)} (S (S Z)) (_::_ {Z} (S Z) [])) : Vec Nat (S (S (S Z)))").ready,
+    //     headOfVec = await new R.Def("headOfVec", "head {Nat}{(S (S Z))} someVec : Nat").ready;
+
+    // let someVec = await new R.Def("someVec", "_::_ {(S Z)} False (_::_ {Z} True []) : Vec Bool (S (S Z))").ready;
+    //     headOfVec = await new R.Def("headOfVec", "head {Bool}{(S Z)} someVec : Bool").ready;
+
+    // let someVec = await new R.Def("someVec", "_::_ {(S Z)} True (_::_ {Z} False []) : Vec Bool (S (S Z))").ready,
+    //     sameVec = await new R.Def("sameVec", "vecid {Bool}{(S (S Z))} someVec : Vec Bool (S (S Z))").ready;
+    let someVec = await new R.Def("someVec", "_::_ {(S Z)} False (_::_ {Z} True []) : Vec Bool (S (S Z))").ready;
+        tailOfVec = await new R.Def("tailOfVec", "tail {Bool}{(S Z)} someVec : Vec Bool (S Z)").ready;
+throw ""
+    console.log(`%ctailOfVec =`, 'font-weight: bold; color: deeppink', tailOfVec.result.print());
+
     // console.log(`%chead someVec =`, 'font-weight: bold; color: deeppink',
     //   (await (head(Nat(), Nat().s(Nat().s(Nat().z())), someVec)).ready).result.print());
     // doubleVec = new R.Sig(
@@ -271,6 +282,7 @@
     // let headVec = await head(Nat(), Nat().s(Nat().s(Nat().z())), theVec).ready;
     // console.log(headVec, headVec.term.print(), '--', headVec.result.print());
     //
+    R.setOptions({ debug: { } });
     //
     // Fin = new R.Data(
     //   "Fin", "(n : Nat) -> Type",
@@ -312,18 +324,18 @@
     //   "twoLTone", "(S (S Z)) <= (S Z)" ).Def(
     //     "LS {(S Z)}{Z} (LS {Z}{Z} (LZ {Z}))" ).ready;
     // R.setOptions({ debug: { lexer: true, parser: true } });
-    // let oneLTtwo = await new R.Sig(
-    //   "oneLTtwo", "(S Z) <= (S (S Z))" ).Def(
-    //     "LS {Z}{(S Z)} (LZ {(S Z)})" ).ready;
+    let oneLTtwo = await new R.Sig(
+      "oneLTtwo", "(S Z) <= (S (S Z))" ).Def(
+        "LS {Z}{(S Z)} (LZ {(S Z)})" ).ready;
     let twoLTtwo = await new R.Sig(
       "twoLTtwo", "(S (S Z)) <= (S (S Z))" ).Def(
         "LS {(S Z)}{(S Z)} (LS {Z}{Z} (LZ {Z}))" ).ready;
 
     R.setOptions({ debug: { parsedDecl: true, typechecker: false } });
     antisym = new R.Sig(
-      "antisym", "(m n : Nat) -> m <= n -> n <= m -> [ Nat ] m = n" ).Def([
-        "@ .Z .Z (LZ .{Z}) (LZ .{Z}) := Refl",
-        "@ .(S k) .(S l) (LS {k}{l} x) (LS .{l}.{k} y) := cong {Nat}{Nat}{k}{l} (a => S a) (antisym k l x y)",
+      "antisym", "{m n : Nat} -> m <= n -> n <= m -> [ Nat ] m = n" ).Def([
+        "@ .{Z}.{Z} (LZ .{Z}) (LZ .{Z}) := Refl",
+        "@ .{(S k)}.{(S l)} (LS {k}{l} x) (LS .{l}.{k} y) := cong {Nat}{Nat}{k}{l} (a => S a) (antisym {k}{l} x y)",
     ])
   })().catch(console.log)
 
