@@ -23,7 +23,7 @@ Development references:
 ## JavaScript API
 **Reason.js** objects are created using the `Data`, `Def` and `Sig` methods on an initialised `Reason` object. The un-typechecked object is available synchronously with limited properties, and immediately attempts asynchronous typechecking.
 
-To request asynchronous typechecking of **Reason** code either use eg `R.ready`, or for a new object called `myTerm`, use `myTerm.ready`. If your code passes typechecking, new properties and methods will become available.
+To wait for asynchronous typechecking of **Reason** code to complete either use eg `R.ready`, or for a new object called `myTerm`, use `myTerm.ready`. If your code passes typechecking, new properties and methods will become available.
 ```js
 let R = Reason();
 
@@ -238,7 +238,7 @@ let doubleVec = await new R
 
 let someVec = await doubleVec(Vec(Nat()).from([0,1])).ready;
 someVec.result.print(); // == "[ 0, 0, 1, 1 ]"
-someVec.type.print(); // == "Vec 4 Nat"
+someVec.type.print(); // == "Vec Nat 4"
 
 // Fixity annotations
 let Leq = await new R
@@ -335,7 +335,7 @@ let funExt = new R
       .Def(["@ p i x := p x i"]),
     transport = new R
       .Sig( "transport", "{A B : Type} -> A = B -> A -> B" )
-      .Def(["@ p a := transp (i => p i) left a"])
+      .Def(["@ p a := transp p left a"])
 
 // Well-typed WebAssembly
 ```

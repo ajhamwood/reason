@@ -1,0 +1,142 @@
+<!doctype html>
+<html>
+<head>
+  <title>Reason.js | Verified WebAssembly code</title>
+  <meta charset='UTF-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <meta name='keywords' content='key, words'>
+  <meta name='description' content='Description.'>
+  <link rel='icon' type='image/x-icon' href='data:image/x-icon;base64,'>
+  <style>
+    body { height: 100%; margin: 0; background: black }
+  </style>
+</head>
+<body>
+  <script src='reason.js'></script>
+  <script>
+
+  // Demonstration of Reason.js producing verified WebAssembly.
+
+  const R = Reason({
+    debug: {lexer: false, parser: false, parsedDecl: false, typechecker: false}
+  });
+
+  let Bin, Bit, List, Sigma, sucBin, addBin, dblBin, multBin, predBin, factBin, add1, toBits, fromBits;
+
+  let test;
+
+  (async () => {
+
+    // Data
+
+    Bin = new R.Data(
+      "Bin", "Type",
+      [ { "0# : Bin": { valueOf: () => 0 } },
+        { "2suc : Bin -> Bin": {
+          valueOf () { return 2 * (this[0].toString() + 1) } } },
+        { "suc2* : Bin -> Bin": {
+          valueOf () { return 1 + (this[0].toString() * 2) } } } ],
+      { fromJS: v => { let p = () => v ? v % 2 ? Bin()["suc2*"](p(v = (v - 1) / 2)) : Bin()["2suc"](p(v = (v / 2) - 1)) : Bin()["0#"](); return p() } });
+
+    Bit = new R.Data(
+      'Bit', 'Type',
+      [ { '0b : Bit': { toString: () => '0b', valueOf: () => 0 } },
+        { '1b : Bit': { toString: () => '1b', valueOf: () => 1 } } ],
+      { fromJS: v => Bool()[v ? '0b' : '1b']() });
+
+    List = new R.Data(
+      "List", "(A : Type) : Type",
+      [ { "[] : List A": { toString: () => '[]', valueOf: () => [] } },
+        { "_::_ : A -> List A -> List A":
+          { toString () { return '[ ' + (this[1].name === "_::_" ? this[0].toString() + ', ' + this[1].toString().slice(2) : this[0].toString() + ' ]') },
+            valueOf () { return [ this[0].valueOf() ].concat(this[1].valueOf()) } } } ],
+      { fromJS (v) { let p = () => v.length ? this['_::_'](this.a.fromJS(v.shift()), p()) : this['[]'](); return p() } } );
+
+    Sigma = new R.Data(
+      "Sigma", "(A : Type)(B : (A -> Type)) : Type",
+      [ "<_|_> : (x : A) -> (B x) -> Sigma A B" ] );
+
+    // Functions
+
+    sucBin = new R.Sig(
+      "sb", "Bin -> Bin").Def([
+        "@  0#       := suc2* 0#",
+        "@ (suc2* n) := 2suc n",
+        "@ (2suc  n) := suc2* (sb n)" ]);
+
+    addBin = new R.Sig(
+      "_+b_", "Bin -> Bin -> Bin").Def([
+        "@  0#        0#       := 0#",
+        "@  0#       (2suc  n) := 2suc n",
+        "@  0#       (suc2* n) := suc2* n",
+        "@ (suc2* m)  0#       := suc2* m",
+        "@ (suc2* m) (2suc  n) := sb (2suc (m +b n))",
+        "@ (suc2* m) (suc2* n) := sb (suc2* (m +b n))",
+        "@ (2suc  m)  0#       := 2suc m",
+        "@ (2suc  m) (2suc  n) := 2suc (sb (m +b n))",
+        "@ (2suc  m) (suc2* n) := sb (2suc (m +b n))" ]);
+
+    dblBin = new R.Sig(
+      "2*", "Bin -> Bin").Def([
+        "@  0#       := 0#",
+        "@ (suc2* n) := 2suc (2* n)",
+        "@ (2suc  n) := 2suc (suc2* n)" ]);
+
+    multBin = new R.Sig(
+      "_*b_", "Bin -> Bin -> Bin").Def([
+        "@  0#        0#       := 0#",
+        "@  0#       (2suc  n) := 0#",
+        "@  0#       (suc2* n) := 0#",
+        "@ (suc2* m)  0#       := 0#",
+        "@ (suc2* m) (2suc  n) := 2suc (n +b m *b (2suc n))",
+        "@ (suc2* m) (suc2* n) := suc2* (m +b n *b (suc2* m))",
+        "@ (2suc  m)  0#       := 0#",
+        "@ (2suc  m) (2suc  n) := 2* (2suc (m +b n +b m *b n))",
+        "@ (2suc  m) (suc2* n) := 2suc (m +b n *b (2suc m))" ]);
+
+    predBin = new R.Sig(
+      "pb", "Bin -> Bin").Def([
+        "@  0#       := 0#",
+        "@ (suc2* n) := 2* n",
+        "@ (2suc  n) := suc2* n" ]);
+
+    factBin = new R.Sig(
+      "_!b", "Bin -> Bin").Def([
+        "@  0#       := suc2* 0#",
+        "@ (suc2* n) := (suc2* n) *b ((2* n) !b)",
+        "@ (2suc  n) := (2suc n) *b ((suc2* n) !b)"]);
+
+    // Bit representation
+    await R.ready;
+    // R.setOptions({ debug: { parsedDecl: true, typechecker: true } });
+    R.setOptions({ debug: { lexer: true, parser: true } });
+    add1 = new R.Sig(
+      "add1", "List Bit -> List Bit").Def([
+        "@  []          := 1b :: []",
+        "@ (_::_ 0b bs) := 1b :: bs",
+        "@ (_::_ 1b bs) := 0b :: (add1 bs)" ]);
+    toBits = new R.Sig(
+      "toBits", "Bin -> List Bit").Def([
+        "@  0#       := []",
+        "@ (suc2* n) := 1b :: (toBits n)",
+        "@ (2suc  n) := 0b :: add1 (toBits n)" ]);
+    fromBits = new R.Sig(
+      "fromBits", "List Bit -> Bin").Def([
+        "@  []          := 0#",
+        "@ (_::_ 0b bs) := 2* (fromBits bs)",
+        "@ (_::_ 1b bs) := suc2* (fromBits n)" ]);
+
+
+    await R.ready;
+
+    test = await factBin(Bin().fromJS(7)).ready;
+    console.log(test)
+    console.log(`%ctest :=`, 'font-weight: bold', test.print);
+    console.log(`%ctest =`, 'font-weight: bold; color: deeppink', test.result.print());
+
+  })().catch(console.log)
+
+  </script>
+  <noscript><h6>Only viewable with JavaScript enabled.</h6></noscript>
+</body>
+</html>
